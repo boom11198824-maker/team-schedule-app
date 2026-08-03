@@ -311,13 +311,18 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
 
       <div id="task-section" class="hidden">
         <h3>서류·보정 일정</h3>
+
+        <p id="task-sheet-notice" class="empty-note hidden" style="text-align:left; padding:8px 0;">
+          📊 이 사건의 서류·보정 일정은 <a id="task-sheet-link" href="#" target="_blank" rel="noopener">구글시트</a>에서 직원이 직접 입력/수정합니다. 여기서는 조회만 가능합니다.
+        </p>
+
         <table class="task-table">
-          <thead><tr><th>업무구분</th><th>마감예정일</th><th>상태</th><th></th></tr></thead>
+          <thead><tr><th>업무구분</th><th>수령일</th><th>마감예정일</th><th>상태</th><th></th></tr></thead>
           <tbody id="task-tbody"></tbody>
         </table>
         <p id="task-empty-note" class="empty-note hidden" style="padding:8px 0;">등록된 일정이 없습니다.</p>
 
-        <div class="mini-form">
+        <div class="mini-form" id="task-mini-form-wrap">
           <div class="mini-form-title" id="task-form-title">새 일정 추가</div>
           <form id="task-form">
             <input type="hidden" id="task-id" />
@@ -336,11 +341,15 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
                 </datalist>
               </div>
               <div>
-                <label>마감예정일 *</label>
-                <input type="date" id="task-due" required />
+                <label>수령일 (서류 송달받은 날)</label>
+                <input type="date" id="task-received" />
               </div>
             </div>
             <div class="row">
+              <div>
+                <label>마감예정일 *</label>
+                <input type="date" id="task-due" required />
+              </div>
               <div>
                 <label>상태</label>
                 <select id="task-status">
@@ -349,11 +358,9 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
                   <option value="완료">완료</option>
                 </select>
               </div>
-              <div>
-                <label>담당자</label>
-                <input type="text" id="task-assignee" />
-              </div>
             </div>
+            <label>담당자</label>
+            <input type="text" id="task-assignee" />
             <label>메모</label>
             <input type="text" id="task-memo" />
             <p id="task-error" class="error-text"></p>
@@ -425,16 +432,18 @@ function cardHTML(t) {
   else badgeText = `D-${t.dDay}`;
 
   const icon = t.status === '완료' ? '✅' : (t.status === '예정' && t.dDay < 0) ? '⛔' : (t.status === '예정' && t.dDay === 0) ? '🔴' : (t.status !== '완료' && t.dDay <= 3) ? '🟡' : '🔵';
+  const receivedPart = t.received_date ? ` · 수령 ${escapeHTML(t.received_date)}` : '';
+  const canQuickComplete = t.status !== '완료' && t.source !== 'sheet';
 
   return `
     <div class="card ${cls}" data-case-id="${t.case_id}">
       <span class="badge">${badgeText}</span>
       <div class="body">
         <p class="title">${icon} ${escapeHTML(t.client_name)} · ${escapeHTML(t.task_type)}</p>
-        <p class="meta">담당: <b>${escapeHTML(t.assignee_name || '-')}</b> · ${escapeHTML(t.court || '')} ${escapeHTML(t.court_case_no || '')}</p>
+        <p class="meta">담당: <b>${escapeHTML(t.assignee_name || '-')}</b> · ${escapeHTML(t.court || '')} ${escapeHTML(t.court_case_no || '')}${receivedPart}</p>
       </div>
       <div class="due">${t.due_date}</div>
-      ${t.status !== '완료' ? `<div class="actions"><button type="button" class="btn-small" data-quick-complete="${t.id}">완료 처리</button></div>` : ''}
+      ${canQuickComplete ? `<div class="actions"><button type="button" class="btn-small" data-quick-complete="${t.id}">완료 처리</button></div>` : ''}
     </div>`;
 }
 
@@ -533,6 +542,18 @@ async function openCaseModal(caseId) {
     document.getElementById('btn-delete-case').classList.remove('hidden');
     document.getElementById('btn-save-case').textContent = '저장';
     document.getElementById('task-section').classList.remove('hidden');
+
+    const notice = document.getElementById('task-sheet-notice');
+    const formWrap = document.getElementById('task-mini-form-wrap');
+    if (sheetsStatus.tasksManagedInSheet) {
+      document.getElementById('task-sheet-link').href = sheetsStatus.url;
+      notice.classList.remove('hidden');
+      formWrap.classList.add('hidden');
+    } else {
+      notice.classList.add('hidden');
+      formWrap.classList.remove('hidden');
+    }
+
     await renderTaskTable(caseId);
   } else {
     openCaseId = null;
@@ -565,14 +586,15 @@ async function renderTaskTable(caseId) {
       .map((t) => `
         <tr>
           <td>${escapeHTML(t.task_type)}</td>
+          <td>${escapeHTML(t.received_date || '-')}</td>
           <td>${t.due_date}</td>
           <td><span class="status-pill ${t.status}">${t.status}</span></td>
           <td class="actions-cell">
-            <button type="button" class="btn-small" data-edit-task="${t.id}">편집</button>
+            ${t.source === 'sheet' ? '' : `<button type="button" class="btn-small" data-edit-task="${t.id}">편집</button>`}
           </td>
         </tr>`).join('');
     tbody.querySelectorAll('[data-edit-task]').forEach((btn) => {
-      btn.addEventListener('click', () => loadTaskIntoForm(tasks.find((t) => t.id === Number(btn.dataset.editTask))));
+      btn.addEventListener('click', () => loadTaskIntoForm(tasks.find((t) => String(t.id) === btn.dataset.editTask)));
     });
   }
 }
@@ -580,6 +602,7 @@ async function renderTaskTable(caseId) {
 function loadTaskIntoForm(task) {
   document.getElementById('task-id').value = task.id;
   document.getElementById('task-type').value = task.task_type;
+  document.getElementById('task-received').value = task.received_date || '';
   document.getElementById('task-due').value = task.due_date;
   document.getElementById('task-status').value = task.status;
   document.getElementById('task-assignee').value = task.assignee_name || '';
@@ -634,6 +657,7 @@ document.getElementById('task-form').addEventListener('submit', async (e) => {
   const payload = {
     case_id: openCaseId,
     task_type: document.getElementById('task-type').value.trim(),
+    received_date: document.getElementById('task-received').value,
     due_date: document.getElementById('task-due').value,
     status: document.getElementById('task-status').value,
     assignee_name: document.getElementById('task-assignee').value.trim(),
@@ -687,12 +711,15 @@ function formatSyncedAt(iso) {
   return `${p.y}.${String(p.mo).padStart(2,'0')}.${String(p.da).padStart(2,'0')} ${String(p.h).padStart(2,'0')}:${String(p.mi).padStart(2,'0')}`;
 }
 
+let sheetsStatus = { exported: false, url: null, tasksManagedInSheet: false };
+
 async function refreshSheetsStatus() {
   const statusEl = document.getElementById('sheets-status');
   try {
-    const status = await api('/api/sheets/status');
-    if (status.exported) {
-      statusEl.innerHTML = `📊 <a href="${status.url}" target="_blank" rel="noopener">구글시트에서 보기</a> · 마지막 동기화: ${formatSyncedAt(status.lastSyncedAt)}`;
+    sheetsStatus = await api('/api/sheets/status');
+    if (sheetsStatus.exported) {
+      const managedNote = sheetsStatus.tasksManagedInSheet ? ' · 서류·보정 일정은 직원이 시트에서 직접 관리 중' : '';
+      statusEl.innerHTML = `📊 <a href="${sheetsStatus.url}" target="_blank" rel="noopener">구글시트에서 보기</a> · 마지막 동기화: ${formatSyncedAt(sheetsStatus.lastSyncedAt)}${managedNote}`;
       statusEl.classList.remove('hidden');
     } else {
       statusEl.classList.add('hidden');
@@ -708,9 +735,10 @@ document.getElementById('btn-sheets-export').addEventListener('click', async (e)
   try {
     const result = await api('/api/sheets/export', { method: 'POST' });
     await refreshSheetsStatus();
-    if (confirm(`구글시트로 내보냈습니다 (사건 ${result.caseCount}건 · 일정 ${result.taskCount}건).\n지금 열어볼까요?`)) {
-      window.open(result.url, '_blank');
-    }
+    const msg = result.firstTime
+      ? `구글시트를 새로 만들었습니다 (사건 ${result.caseCount}건). 직원 이메일이 등록되어 있으면 자동으로 편집 권한을 공유했습니다.\n앞으로 서류·보정 일정(일정_보정관리 탭)은 직원이 시트에서 직접 입력하면 됩니다.\n지금 열어볼까요?`
+      : `사건목록 탭을 최신 사건 ${result.caseCount}건으로 갱신했습니다.\n(서류·보정 일정 탭은 직원이 직접 관리 중이라 건드리지 않았습니다)\n지금 열어볼까요?`;
+    if (confirm(msg)) window.open(result.url, '_blank');
   } catch (err) {
     alert(err.message);
   } finally {
@@ -729,8 +757,8 @@ async function init() {
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
   if (currentUser.role === 'admin') {
     document.getElementById('btn-sheets-export').style.display = 'inline-block';
-    refreshSheetsStatus();
   }
+  await refreshSheetsStatus();
   await loadAll();
 }
 

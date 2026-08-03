@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS case_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   case_id INTEGER NOT NULL,
   task_type TEXT NOT NULL,
+  received_date TEXT,
   due_date TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT '예정',
   assignee_name TEXT,
@@ -106,6 +107,16 @@ try {
 }
 try {
   db.exec("ALTER TABLE google_auth ADD COLUMN sheets_last_synced_at TEXT");
+} catch (err) {
+  if (!String(err.message).includes('duplicate column')) throw err;
+}
+try {
+  db.exec("ALTER TABLE case_tasks ADD COLUMN received_date TEXT");
+} catch (err) {
+  if (!String(err.message).includes('duplicate column')) throw err;
+}
+try {
+  db.exec("ALTER TABLE google_auth ADD COLUMN tasks_source TEXT");
 } catch (err) {
   if (!String(err.message).includes('duplicate column')) throw err;
 }
@@ -189,6 +200,7 @@ function requireAdmin(req, res, next) {
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/drive.file',
 ];
 
 function getOAuthClient() {
@@ -349,51 +361,82 @@ async function googleUnshareCalendar(email) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 구글 시트 내보내기 (사건관리 데이터 백업/공유용, 1-way export)             */
+/* 구글 시트 연동 (사건목록: 앱이 관리 / 일정_보정관리: 직원이 시트에서 직접 입력) */
 /* ------------------------------------------------------------------ */
-/* 실제 데이터 저장소(source of truth)는 계속 SQLite입니다. 이 스프레드시트는
- * 세무사 공유, 엑셀 열람, 외부 백업 등을 위한 읽기용 사본이며, 여기서 수정한
- * 내용은 웹앱으로 다시 반영되지 않습니다. */
+/* [사건목록] 탭은 계속 이 앱(SQLite)이 원본이며, 내보내기 버튼을 누를 때마다
+ * 최신 사건 목록으로 갱신됩니다 (사건ID를 직원이 시트에서 찾아 쓸 수 있도록).
+ *
+ * [일정_보정관리] 탭은 스프레드시트가 처음 만들어질 때 딱 한 번 현재 데이터로
+ * 시드(seed)된 뒤에는 절대 앱이 덮어쓰지 않습니다 - 그 이후로는 직원이 시트에
+ * 직접 행을 추가/수정하는 것이 원본(source of truth)이 되고, 관리자 대시보드는
+ * 이 탭을 실시간으로 읽어와 보여줍니다 (읽기 전용 뷰). */
 
 const SHEETS_TITLE_CASES = '사건목록';
 const SHEETS_TITLE_TASKS = '일정_보정관리';
+const TASKS_SHEET_HEADER = ['사건ID', '의뢰인명', '업무구분/서류명', '수령일', '마감예정일', '처리상태', '담당자', '웹앱 표시용 타이틀', '메모'];
 
 async function getSheetsAuthorizedClient() {
-  const client = await getAuthorizedGoogleClient();
-  return client;
+  return getAuthorizedGoogleClient();
+}
+
+function caseIdToken(id) { return `CASE_${String(id).padStart(3, '0')}`; }
+
+// "CASE_001", "001", "1" 등 직원이 느슨하게 입력해도 숫자만 뽑아 사건ID로 인식
+function parseCaseIdToken(token) {
+  const digits = String(token || '').replace(/[^0-9]/g, '');
+  return digits ? parseInt(digits, 10) : null;
 }
 
 function buildCasesSheetRows() {
   const rows = db.prepare('SELECT * FROM cases ORDER BY id ASC').all();
   const header = ['사건ID', '의뢰인명', '연락처', '관할법원', '사건번호', '담당직원', '메모', '등록일'];
   const body = rows.map((c) => [
-    `CASE_${String(c.id).padStart(3, '0')}`,
+    caseIdToken(c.id),
     c.client_name || '', c.phone || '', c.court || '', c.court_case_no || '',
     c.assignee_name || '', c.memo || '', c.created_at || '',
   ]);
   return [header, ...body];
 }
 
-function buildTasksSheetRows() {
+function buildTasksSeedRows() {
   const rows = db.prepare(`
-    SELECT t.*, c.client_name AS client_name, c.court AS court, c.court_case_no AS court_case_no
+    SELECT t.*, c.client_name AS client_name
     FROM case_tasks t LEFT JOIN cases c ON c.id = t.case_id
     ORDER BY t.due_date ASC
   `).all();
-  const header = ['사건ID', '의뢰인명', '업무구분/서류명', '마감예정일', '처리상태', '담당자', '웹앱 표시용 타이틀', '메모'];
   const body = rows.map((t) => {
     const titleSuffix = t.status === '완료' ? '' : '예정';
     const displayTitle = `${t.client_name || ''} ${t.task_type}${titleSuffix}`.trim();
     return [
-      `CASE_${String(t.case_id).padStart(3, '0')}`,
-      t.client_name || '', t.task_type || '', t.due_date || '',
+      caseIdToken(t.case_id),
+      t.client_name || '', t.task_type || '', t.received_date || '', t.due_date || '',
       t.status || '', t.assignee_name || '', displayTitle, t.memo || '',
     ];
   });
-  return [header, ...body];
+  return [TASKS_SHEET_HEADER, ...body];
 }
 
-async function exportCasesToGoogleSheet(adminUserId) {
+async function shareSheetWithStaff(sheets, spreadsheetId, client) {
+  const emails = db.prepare("SELECT email FROM employees WHERE email IS NOT NULL AND email != ''").all().map((r) => r.email);
+  if (!emails.length) return;
+  const drive = google.drive({ version: 'v3', auth: client });
+  for (const email of emails) {
+    try {
+      await drive.permissions.create({
+        fileId: spreadsheetId,
+        sendNotificationEmail: false,
+        requestBody: { type: 'user', role: 'writer', emailAddress: email },
+      });
+    } catch (err) {
+      console.error(`구글시트 공유 실패 (${email}):`, err.message);
+    }
+  }
+}
+
+// 사건목록 탭은 매번 최신화하고, 일정_보정관리 탭은 스프레드시트가 처음 만들어질 때만
+// 시드로 채운다. 그 이후 이 함수를 다시 호출해도 일정_보정관리 탭은 건드리지 않는다
+// (직원이 시트에 입력해둔 내용을 앱이 덮어써서 날려버리는 사고를 막기 위함).
+async function exportCasesToGoogleSheet() {
   const client = await getSheetsAuthorizedClient();
   if (!client) {
     const err = new Error('구글 계정이 연동되어 있지 않습니다. 먼저 구글 캘린더 연동을 진행해주세요.');
@@ -403,12 +446,13 @@ async function exportCasesToGoogleSheet(adminUserId) {
   const sheets = google.sheets({ version: 'v4', auth: client });
   const authRow = getStoredGoogleAuth();
   let spreadsheetId = authRow && authRow.sheets_spreadsheet_id;
+  const isFirstTime = !spreadsheetId;
 
   try {
-    if (!spreadsheetId) {
+    if (isFirstTime) {
       const created = await sheets.spreadsheets.create({
         requestBody: {
-          properties: { title: '사건관리 데이터 (팀 스케줄 앱 백업)' },
+          properties: { title: '사건관리 데이터 (팀 스케줄 앱 연동)' },
           sheets: [
             { properties: { title: SHEETS_TITLE_CASES } },
             { properties: { title: SHEETS_TITLE_TASKS } },
@@ -416,21 +460,22 @@ async function exportCasesToGoogleSheet(adminUserId) {
         },
       });
       spreadsheetId = created.data.spreadsheetId;
-      db.prepare('UPDATE google_auth SET sheets_spreadsheet_id = ? WHERE id = 1').run(spreadsheetId);
+      db.prepare("UPDATE google_auth SET sheets_spreadsheet_id = ?, tasks_source = 'sheet' WHERE id = 1").run(spreadsheetId);
+
+      // 일정_보정관리 탭: 이번 한 번만 현재 데이터로 시드. 이후로는 직원이 시트에서 직접 관리.
+      const tasksSeed = buildTasksSeedRows();
+      await sheets.spreadsheets.values.update({
+        spreadsheetId, range: `${SHEETS_TITLE_TASKS}!A1`, valueInputOption: 'RAW', requestBody: { values: tasksSeed },
+      });
+
+      await shareSheetWithStaff(sheets, spreadsheetId, client);
     }
 
+    // 사건목록 탭: 항상 최신 사건 목록으로 갱신 (직원이 사건ID를 찾아 쓸 수 있도록)
     const casesRows = buildCasesSheetRows();
-    const tasksRows = buildTasksSheetRows();
-
-    // 매번 두 탭 전체를 지우고 최신 스냅샷으로 다시 씀 (증분 동기화 대신 전체 덮어쓰기 -
-    // 사건관리 데이터 규모(수백~수천 행)에서는 이 방식이 가장 단순하고 사고 위험이 적음)
     await sheets.spreadsheets.values.clear({ spreadsheetId, range: `${SHEETS_TITLE_CASES}!A1:Z100000` });
-    await sheets.spreadsheets.values.clear({ spreadsheetId, range: `${SHEETS_TITLE_TASKS}!A1:Z100000` });
     await sheets.spreadsheets.values.update({
       spreadsheetId, range: `${SHEETS_TITLE_CASES}!A1`, valueInputOption: 'RAW', requestBody: { values: casesRows },
-    });
-    await sheets.spreadsheets.values.update({
-      spreadsheetId, range: `${SHEETS_TITLE_TASKS}!A1`, valueInputOption: 'RAW', requestBody: { values: tasksRows },
     });
 
     const syncedAt = new Date().toISOString();
@@ -440,17 +485,65 @@ async function exportCasesToGoogleSheet(adminUserId) {
       url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
       syncedAt,
       caseCount: casesRows.length - 1,
-      taskCount: tasksRows.length - 1,
+      firstTime: isFirstTime,
     };
   } catch (err) {
     // 기존에 연동된 계정이 (구)캘린더 권한만 갖고 있어 시트 권한이 없는 경우
     if (err.code === 403 || /insufficient|permission/i.test(err.message || '')) {
-      const wrapped = new Error('구글 계정에 스프레드시트 권한이 없습니다. "구글 캘린더 연동"에서 다시 연결해주세요 (시트 권한이 추가되었습니다).');
+      const wrapped = new Error('구글 계정에 스프레드시트 권한이 없습니다. "구글 캘린더 연동"에서 다시 연결해주세요 (시트/드라이브 권한이 추가되었습니다).');
       wrapped.code = 'NEEDS_RECONSENT';
       throw wrapped;
     }
     throw err;
   }
+}
+
+// 관리자 대시보드용: 일정_보정관리 탭을 실시간으로 읽어와 case_tasks와 같은 모양으로 변환.
+// 시트가 연동되어 있지 않으면 null을 반환해서 호출 측이 SQLite로 폴백하도록 한다.
+async function readTasksFromSheetIfConnected() {
+  const authRow = getStoredGoogleAuth();
+  if (!authRow || !authRow.sheets_spreadsheet_id || authRow.tasks_source !== 'sheet') return null;
+
+  const client = await getSheetsAuthorizedClient();
+  if (!client) return null;
+
+  const sheets = google.sheets({ version: 'v4', auth: client });
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: authRow.sheets_spreadsheet_id,
+    range: `${SHEETS_TITLE_TASKS}!A2:I100000`,
+  });
+  const rows = resp.data.values || [];
+
+  const cases = db.prepare('SELECT * FROM cases').all();
+  const caseById = new Map(cases.map((c) => [c.id, c]));
+
+  const tasks = [];
+  let skipped = 0;
+  rows.forEach((row, i) => {
+    const [caseIdRaw, clientNameRaw, taskType, receivedDate, dueDate, statusRaw, assignee, , memo] = row;
+    const caseId = parseCaseIdToken(caseIdRaw);
+    if (!caseId || !taskType || !dueDate) { if ((row || []).some(Boolean)) skipped++; return; }
+    const c = caseById.get(caseId);
+    const status = CASE_TASK_STATUSES.includes(statusRaw) ? statusRaw : '예정';
+    tasks.push({
+      id: `sheet-${i}`,
+      source: 'sheet',
+      sheetRow: i + 2,
+      case_id: caseId,
+      task_type: taskType,
+      received_date: receivedDate || '',
+      due_date: dueDate,
+      status,
+      assignee_name: assignee || (c && c.assignee_name) || '',
+      memo: memo || '',
+      client_name: (c && c.client_name) || clientNameRaw || '',
+      court: (c && c.court) || '',
+      court_case_no: (c && c.court_case_no) || '',
+    });
+  });
+
+  if (skipped > 0) console.warn(`구글시트 일정_보정관리: 형식이 맞지 않아 건너뛴 행 ${skipped}건 (사건ID/업무구분/마감예정일 확인 필요)`);
+  return tasks;
 }
 
 /* ------------------------------------------------------------------ */
@@ -736,6 +829,7 @@ function caseTaskToGoogleEvent(task) {
       `사건: ${c.client_name || ''}`,
       c.court || c.court_case_no ? `관할: ${[c.court, c.court_case_no].filter(Boolean).join(' ')}` : null,
       `업무: ${task.task_type}`,
+      task.received_date ? `송달/수령일: ${task.received_date}` : null,
       `상태: ${task.status}`,
       task.assignee_name ? `담당자: ${task.assignee_name}` : null,
       task.memo || null,
@@ -749,8 +843,24 @@ function caseTaskToGoogleEvent(task) {
   };
 }
 
-app.get('/api/case-tasks', requireLogin, (req, res) => {
+app.get('/api/case-tasks', requireLogin, async (req, res) => {
   const { status, caseId } = req.query;
+
+  // 구글시트가 [일정_보정관리]의 원본으로 연동되어 있으면 시트를 실시간으로 읽어 보여준다
+  // (직원이 시트에 입력한 내용이 그대로 반영됨). 연동 안 되어 있거나 읽기 실패 시 SQLite로 폴백.
+  try {
+    const sheetTasks = await readTasksFromSheetIfConnected();
+    if (sheetTasks) {
+      let rows = sheetTasks;
+      if (status) rows = rows.filter((r) => r.status === status);
+      if (caseId) rows = rows.filter((r) => String(r.case_id) === String(caseId));
+      rows.sort((a, b) => a.due_date.localeCompare(b.due_date));
+      return res.json(rows);
+    }
+  } catch (err) {
+    console.error('구글시트 일정 읽기 실패, SQLite로 대체합니다:', err.message);
+  }
+
   const conditions = [];
   const params = [];
   if (status) { conditions.push('status = ?'); params.push(status); }
@@ -763,7 +873,7 @@ app.get('/api/case-tasks', requireLogin, (req, res) => {
 });
 
 app.post('/api/case-tasks', requireLogin, async (req, res) => {
-  const { case_id, task_type, due_date, assignee_name, memo, status } = req.body || {};
+  const { case_id, task_type, due_date, received_date, assignee_name, memo, status } = req.body || {};
   if (!case_id || !task_type || !due_date) return res.status(400).json({ error: '사건, 업무구분, 마감예정일은 필수입니다.' });
 
   const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(case_id);
@@ -771,9 +881,9 @@ app.post('/api/case-tasks', requireLogin, async (req, res) => {
 
   const safeStatus = CASE_TASK_STATUSES.includes(status) ? status : '예정';
   const info = db
-    .prepare(`INSERT INTO case_tasks (case_id, task_type, due_date, status, assignee_name, memo, created_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(case_id, task_type, due_date, safeStatus, assignee_name || caseRow.assignee_name || '', memo || '', req.user.id);
+    .prepare(`INSERT INTO case_tasks (case_id, task_type, received_date, due_date, status, assignee_name, memo, created_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(case_id, task_type, received_date || '', due_date, safeStatus, assignee_name || caseRow.assignee_name || '', memo || '', req.user.id);
 
   const task = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(info.lastInsertRowid);
 
@@ -789,20 +899,25 @@ app.post('/api/case-tasks', requireLogin, async (req, res) => {
 });
 
 app.patch('/api/case-tasks/:id', requireLogin, async (req, res) => {
+  if (String(req.params.id).startsWith('sheet-')) {
+    return res.status(400).json({ error: '이 일정은 구글시트에서 관리됩니다. 시트에서 직접 상태를 변경해주세요.', code: 'SHEET_MANAGED' });
+  }
+
   const task = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(req.params.id);
   if (!task) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
 
-  const { task_type, due_date, status, assignee_name, memo } = req.body || {};
+  const { task_type, due_date, received_date, status, assignee_name, memo } = req.body || {};
   const updated = {
     task_type: task_type ?? task.task_type,
+    received_date: received_date ?? task.received_date,
     due_date: due_date ?? task.due_date,
     status: CASE_TASK_STATUSES.includes(status) ? status : task.status,
     assignee_name: assignee_name ?? task.assignee_name,
     memo: memo ?? task.memo,
   };
 
-  db.prepare(`UPDATE case_tasks SET task_type=?, due_date=?, status=?, assignee_name=?, memo=?, updated_at=datetime('now') WHERE id = ?`)
-    .run(updated.task_type, updated.due_date, updated.status, updated.assignee_name, updated.memo, task.id);
+  db.prepare(`UPDATE case_tasks SET task_type=?, received_date=?, due_date=?, status=?, assignee_name=?, memo=?, updated_at=datetime('now') WHERE id = ?`)
+    .run(updated.task_type, updated.received_date, updated.due_date, updated.status, updated.assignee_name, updated.memo, task.id);
 
   const fresh = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(task.id);
 
@@ -822,6 +937,10 @@ app.patch('/api/case-tasks/:id', requireLogin, async (req, res) => {
 });
 
 app.delete('/api/case-tasks/:id', requireLogin, async (req, res) => {
+  if (String(req.params.id).startsWith('sheet-')) {
+    return res.status(400).json({ error: '이 일정은 구글시트에서 관리됩니다. 시트에서 직접 행을 삭제해주세요.', code: 'SHEET_MANAGED' });
+  }
+
   const task = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(req.params.id);
   if (!task) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
 
@@ -834,7 +953,7 @@ app.delete('/api/case-tasks/:id', requireLogin, async (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---- /api/sheets (사건관리 데이터 -> 구글시트 내보내기, 백업/공유용) ---- */
+/* ---- /api/sheets (사건목록 내보내기 + 일정_보정관리 구글시트 연동 상태) ---- */
 
 app.get('/api/sheets/status', requireLogin, (req, res) => {
   const row = getStoredGoogleAuth();
@@ -843,12 +962,13 @@ app.get('/api/sheets/status', requireLogin, (req, res) => {
     exported: !!spreadsheetId,
     url: spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : null,
     lastSyncedAt: (row && row.sheets_last_synced_at) || null,
+    tasksManagedInSheet: !!(row && row.tasks_source === 'sheet'),
   });
 });
 
 app.post('/api/sheets/export', requireAdmin, async (req, res) => {
   try {
-    const result = await exportCasesToGoogleSheet(req.user.id);
+    const result = await exportCasesToGoogleSheet();
     res.json(result);
   } catch (err) {
     const status = err.code === 'NOT_CONNECTED' || err.code === 'NEEDS_RECONSENT' ? 400 : 500;

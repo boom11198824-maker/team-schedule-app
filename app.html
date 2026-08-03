@@ -67,9 +67,14 @@ button.btn-danger:hover { background: #fecaca; }
 }
 .modal h2 { margin-top: 0; font-size: 18px; }
 .modal label { display: block; font-size: 13px; margin: 12px 0 4px; color: #374151; }
-.modal input, .modal textarea {
+.modal input, .modal textarea, .modal select {
   width: 100%; padding: 9px 11px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;
+  font-family: inherit; background: white;
 }
+.legend { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 20px 10px; font-size: 12px; color: #6b7280; }
+.legend span { display: inline-flex; align-items: center; gap: 4px; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+@media (max-width: 640px) { .legend { padding: 0 12px 10px; font-size: 11px; } }
 .modal .row { display: flex; gap: 12px; }
 .modal .row > div { flex: 1; }
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
@@ -133,6 +138,7 @@ button.btn-danger:hover { background: #fecaca; }
 
   <main>
     <div id="calendar"></div>
+    <div class="legend" id="category-legend"></div>
   </main>
 
   <button id="btn-new-schedule" class="fab">+ 일정 추가</button>
@@ -144,6 +150,15 @@ button.btn-danger:hover { background: #fecaca; }
         <input type="hidden" id="sch-id" />
         <label>제목 *</label>
         <input type="text" id="sch-title" required />
+
+        <label>종류</label>
+        <select id="sch-category">
+          <option value="업무">📋 업무</option>
+          <option value="보정">🔄 보정</option>
+          <option value="상담">💬 상담</option>
+          <option value="휴가">🌴 휴가</option>
+          <option value="기타">📌 기타</option>
+        </select>
 
         <label class="checkbox-row"><input type="checkbox" id="sch-allday" /> 하루 종일</label>
 
@@ -225,6 +240,21 @@ button.btn-danger:hover { background: #fecaca; }
 let currentUser = null;
 let calendar = null;
 
+const CATEGORY_META = {
+  '업무': { icon: '📋', color: '#4f6df5' },
+  '보정': { icon: '🔄', color: '#f59e0b' },
+  '상담': { icon: '💬', color: '#8b5cf6' },
+  '휴가': { icon: '🌴', color: '#ef4444' },
+  '기타': { icon: '📌', color: '#6b7280' },
+};
+
+function renderCategoryLegend() {
+  const el = document.getElementById('category-legend');
+  el.innerHTML = Object.entries(CATEGORY_META)
+    .map(([name, meta]) => `<span><i style="background:${meta.color}"></i>${meta.icon} ${name}</span>`)
+    .join('');
+}
+
 function pad(n) { return String(n).padStart(2, '0'); }
 function toLocalInputValue(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -252,6 +282,7 @@ async function init() {
     document.getElementById('btn-employees').style.display = 'inline-block';
   }
 
+  renderCategoryLegend();
   setupCalendar();
   refreshGoogleStatus();
 
@@ -273,14 +304,20 @@ function setupCalendar() {
     events: async (info, success, failure) => {
       try {
         const rows = await api(`/api/schedules?start=${encodeURIComponent(info.startStr)}&end=${encodeURIComponent(info.endStr)}`);
-        success(rows.map((r) => ({
-          id: r.id,
-          title: r.assignee_name ? `[${r.assignee_name}] ${r.title}` : r.title,
-          start: r.start_at,
-          end: r.end_at,
-          allDay: !!r.all_day,
-          extendedProps: r,
-        })));
+        success(rows.map((r) => {
+          const meta = CATEGORY_META[r.category] || CATEGORY_META['업무'];
+          const namePart = r.assignee_name ? `[${r.assignee_name}] ` : '';
+          return {
+            id: r.id,
+            title: `${meta.icon} ${namePart}${r.title}`,
+            start: r.start_at,
+            end: r.end_at,
+            allDay: !!r.all_day,
+            backgroundColor: meta.color,
+            borderColor: meta.color,
+            extendedProps: r,
+          };
+        }));
       } catch (err) { failure(err); }
     },
     select: (info) => openScheduleModal({ start: info.start, end: info.end, allDay: info.allDay }),
@@ -314,6 +351,7 @@ function openScheduleModal({ start, end, allDay, existing } = {}) {
     document.getElementById('schedule-modal-title').textContent = '일정 수정';
     document.getElementById('sch-id').value = existing.id;
     document.getElementById('sch-title').value = existing.title;
+    document.getElementById('sch-category').value = existing.category || '업무';
     document.getElementById('sch-allday').checked = !!existing.all_day;
     document.getElementById('sch-start').value = toLocalInputValue(new Date(existing.start_at));
     document.getElementById('sch-end').value = toLocalInputValue(new Date(existing.end_at));
@@ -327,6 +365,7 @@ function openScheduleModal({ start, end, allDay, existing } = {}) {
   } else {
     document.getElementById('schedule-modal-title').textContent = '일정 추가';
     document.getElementById('sch-id').value = '';
+    document.getElementById('sch-category').value = '업무';
     document.getElementById('sch-allday').checked = !!allDay;
     const s = start || new Date();
     const e = end && end.getTime() !== s.getTime() ? end : new Date(s.getTime() + 60 * 60 * 1000);
@@ -347,6 +386,7 @@ document.getElementById('schedule-form').addEventListener('submit', async (e) =>
   const allDay = document.getElementById('sch-allday').checked;
   const payload = {
     title: document.getElementById('sch-title').value.trim(),
+    category: document.getElementById('sch-category').value,
     all_day: allDay,
     start_at: toRFC3339(document.getElementById('sch-start').value),
     end_at: toRFC3339(document.getElementById('sch-end').value),

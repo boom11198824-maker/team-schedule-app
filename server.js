@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS schedules (
   end_at TEXT NOT NULL,
   all_day INTEGER NOT NULL DEFAULT 0,
   assignee_name TEXT,
+  category TEXT NOT NULL DEFAULT '업무',
   created_by INTEGER NOT NULL,
   google_event_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -63,6 +64,13 @@ CREATE TABLE IF NOT EXISTS google_auth (
   connected_at TEXT
 );
 `);
+
+// 기존 DB에 category 컬럼이 없는 경우를 위한 마이그레이션 (이미 있으면 조용히 무시)
+try {
+  db.exec("ALTER TABLE schedules ADD COLUMN category TEXT NOT NULL DEFAULT '업무'");
+} catch (err) {
+  if (!String(err.message).includes('duplicate column')) throw err;
+}
 
 /* ------------------------------------------------------------------ */
 /* 인증 / 권한                                                         */
@@ -216,9 +224,14 @@ function addDaysToDateString(dateStr, days) {
 }
 
 function toGoogleEvent(schedule) {
+  const categoryPrefix = schedule.category && schedule.category !== '업무' ? `[${schedule.category}] ` : '';
   const event = {
-    summary: schedule.title,
-    description: [schedule.description, schedule.assignee_name ? `담당자: ${schedule.assignee_name}` : null].filter(Boolean).join('\n'),
+    summary: `${categoryPrefix}${schedule.title}`,
+    description: [
+      schedule.category ? `종류: ${schedule.category}` : null,
+      schedule.description,
+      schedule.assignee_name ? `담당자: ${schedule.assignee_name}` : null,
+    ].filter(Boolean).join('\n'),
     location: schedule.location || undefined,
   };
   if (schedule.all_day) {
@@ -419,14 +432,17 @@ app.get('/api/schedules', requireLogin, (req, res) => {
   res.json(rows);
 });
 
+const SCHEDULE_CATEGORIES = ['업무', '보정', '상담', '휴가', '기타'];
+
 app.post('/api/schedules', requireLogin, async (req, res) => {
-  const { title, description, location, start_at, end_at, all_day, assignee_name } = req.body || {};
+  const { title, description, location, start_at, end_at, all_day, assignee_name, category } = req.body || {};
   if (!title || !start_at || !end_at) return res.status(400).json({ error: '제목, 시작일시, 종료일시는 필수입니다.' });
+  const safeCategory = SCHEDULE_CATEGORIES.includes(category) ? category : '업무';
 
   const info = db
-    .prepare(`INSERT INTO schedules (title, description, location, start_at, end_at, all_day, assignee_name, created_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(title, description || '', location || '', start_at, end_at, all_day ? 1 : 0, assignee_name || '', req.user.id);
+    .prepare(`INSERT INTO schedules (title, description, location, start_at, end_at, all_day, assignee_name, category, created_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(title, description || '', location || '', start_at, end_at, all_day ? 1 : 0, assignee_name || '', safeCategory, req.user.id);
 
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(info.lastInsertRowid);
 
@@ -446,7 +462,7 @@ app.put('/api/schedules/:id', requireLogin, async (req, res) => {
   if (!schedule) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
   if (!canModifySchedule(req.user, schedule)) return res.status(403).json({ error: '본인이 등록한 일정만 수정할 수 있습니다.' });
 
-  const { title, description, location, start_at, end_at, all_day, assignee_name } = req.body || {};
+  const { title, description, location, start_at, end_at, all_day, assignee_name, category } = req.body || {};
   const updated = {
     title: title ?? schedule.title,
     description: description ?? schedule.description,
@@ -455,11 +471,12 @@ app.put('/api/schedules/:id', requireLogin, async (req, res) => {
     end_at: end_at ?? schedule.end_at,
     all_day: all_day === undefined ? schedule.all_day : (all_day ? 1 : 0),
     assignee_name: assignee_name ?? schedule.assignee_name,
+    category: SCHEDULE_CATEGORIES.includes(category) ? category : schedule.category,
   };
 
   db.prepare(
-    `UPDATE schedules SET title=?, description=?, location=?, start_at=?, end_at=?, all_day=?, assignee_name=?, updated_at=datetime('now') WHERE id = ?`
-  ).run(updated.title, updated.description, updated.location, updated.start_at, updated.end_at, updated.all_day, updated.assignee_name, schedule.id);
+    `UPDATE schedules SET title=?, description=?, location=?, start_at=?, end_at=?, all_day=?, assignee_name=?, category=?, updated_at=datetime('now') WHERE id = ?`
+  ).run(updated.title, updated.description, updated.location, updated.start_at, updated.end_at, updated.all_day, updated.assignee_name, updated.category, schedule.id);
 
   const fresh = db.prepare('SELECT * FROM schedules WHERE id = ?').get(schedule.id);
 

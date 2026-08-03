@@ -354,9 +354,9 @@ function setupCalendar() {
   calendar = new FullCalendar.Calendar(el, {
     locale: 'ko',
     height: 'auto',
-    headerToolbar: { left: 'prev,next today', center: 'title', right: 'timeGridDay,timeGridWeek,dayGridMonth' },
+    headerToolbar: { left: 'prev,next today', center: 'title', right: 'listDay,listWeek,dayGridMonth' },
     buttonText: { today: '오늘', month: '월', week: '주', day: '일' },
-    initialView: isMobile ? 'timeGridDay' : 'dayGridMonth',
+    initialView: isMobile ? 'listDay' : 'dayGridMonth',
     eventDisplay: 'block',
     nowIndicator: true,
     dayMaxEvents: true,

@@ -1,0 +1,22 @@
+{
+  "name": "team-schedule-app",
+  "version": "1.0.0",
+  "description": "구글 캘린더와 자동 연동되는 직원 공유 스케줄 관리 웹앱",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^13.0.2",
+    "better-sqlite3-session-store": "^0.1.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "googleapis": "^173.0.0"
+  }
+}

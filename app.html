@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>팀 스케줄</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.11/index.global.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.11/index.global.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.11/locales-all.global.min.js"></script>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
+  background: #f5f6fa;
+  color: #1f2430;
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; background: white; border-bottom: 1px solid #e5e7eb;
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-left h1 { font-size: 18px; margin: 0; }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.user-name { font-size: 14px; color: #374151; font-weight: 600; }
+
+.badge { font-size: 12px; padding: 4px 10px; border-radius: 999px; font-weight: 600; }
+.badge-on { background: #dcfce7; color: #166534; }
+.badge-off { background: #fee2e2; color: #991b1b; }
+
+main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+#calendar { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+
+.fab {
+  position: fixed; right: 28px; bottom: 28px; padding: 14px 22px; border-radius: 999px;
+  background: #4f6df5; color: white; border: none; font-size: 15px; font-weight: 600;
+  box-shadow: 0 6px 20px rgba(79,109,245,0.4); cursor: pointer;
+}
+.fab:hover { background: #3d59e0; }
+
+button.btn-secondary {
+  background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; padding: 8px 14px;
+  border-radius: 8px; font-size: 13px; cursor: pointer;
+}
+button.btn-secondary:hover { background: #e5e7eb; }
+button.btn-primary {
+  background: #4f6df5; color: white; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-primary:hover { background: #3d59e0; }
+button.btn-danger {
+  background: #fee2e2; color: #b91c1c; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-danger:hover { background: #fecaca; }
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex;
+  align-items: center; justify-content: center; z-index: 100;
+}
+.modal-backdrop.hidden { display: none; }
+.modal {
+  background: white; border-radius: 14px; padding: 28px; width: 420px; max-width: 92vw;
+  max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+}
+.modal h2 { margin-top: 0; font-size: 18px; }
+.modal label { display: block; font-size: 13px; margin: 12px 0 4px; color: #374151; }
+.modal input, .modal textarea {
+  width: 100%; padding: 9px 11px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;
+}
+.modal .row { display: flex; gap: 12px; }
+.modal .row > div { flex: 1; }
+.checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.checkbox-row input { width: auto; }
+.modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 20px; }
+.spacer { flex: 1; }
+.hidden { display: none !important; }
+
+.emp-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+.emp-table th, .emp-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #f0f0f0; }
+.emp-table button { font-size: 12px; padding: 4px 8px; }
+
+.fc-event { cursor: pointer; }
+
+@media (max-width: 640px) {
+  .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .topbar-left h1 { font-size: 16px; }
+  .topbar-right { gap: 6px; }
+  .topbar-right .user-name { display: none; }
+  button.btn-secondary { padding: 7px 10px; font-size: 12px; }
+  .badge { font-size: 11px; padding: 3px 8px; }
+
+  main { padding: 12px; }
+  #calendar { padding: 8px; }
+
+  .fc-toolbar { flex-direction: column; gap: 8px; align-items: stretch !important; }
+  .fc-toolbar-title { font-size: 16px !important; text-align: center; }
+  .fc-toolbar-chunk { display: flex; justify-content: center; }
+  .fc-button { padding: 5px 8px !important; font-size: 12px !important; }
+
+  .fab {
+    position: static; display: block; width: calc(100% - 24px);
+    margin: 14px 12px 20px; border-radius: 10px; box-shadow: none;
+    padding: 14px; font-size: 15px; text-align: center;
+  }
+
+  .modal { padding: 20px; width: 100%; border-radius: 14px 14px 0 0; overflow-x: auto; }
+  .modal-backdrop { align-items: flex-end; }
+  .modal .row { flex-direction: column; gap: 0; }
+  .modal-actions { flex-wrap: wrap; }
+  .modal-actions button { flex: 1 1 auto; }
+
+  .emp-table { font-size: 12px; min-width: 480px; }
+  .emp-table th, .emp-table td { padding: 6px 4px; white-space: nowrap; }
+}
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1>📅 팀 스케줄</h1>
+      <span id="google-status" class="badge badge-off">구글 캘린더 미연동</span>
+    </div>
+    <div class="topbar-right">
+      <button id="btn-employees" class="btn-secondary" style="display:none">직원 관리</button>
+      <button id="btn-google" class="btn-secondary">구글 캘린더 연동</button>
+      <span id="user-name" class="user-name"></span>
+      <button id="btn-logout" class="btn-secondary">로그아웃</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="calendar"></div>
+  </main>
+
+  <button id="btn-new-schedule" class="fab">+ 일정 추가</button>
+
+  <div id="schedule-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2 id="schedule-modal-title">일정 추가</h2>
+      <form id="schedule-form">
+        <input type="hidden" id="sch-id" />
+        <label>제목 *</label>
+        <input type="text" id="sch-title" required />
+
+        <label class="checkbox-row"><input type="checkbox" id="sch-allday" /> 하루 종일</label>
+
+        <div class="row">
+          <div>
+            <label>시작</label>
+            <input type="datetime-local" id="sch-start" required />
+          </div>
+          <div>
+            <label>종료</label>
+            <input type="datetime-local" id="sch-end" required />
+          </div>
+        </div>
+
+        <label>담당자</label>
+        <input type="text" id="sch-assignee" placeholder="예: 진홍" />
+
+        <label>장소</label>
+        <input type="text" id="sch-location" />
+
+        <label>설명</label>
+        <textarea id="sch-desc" rows="3"></textarea>
+
+        <p id="schedule-error" class="error-text"></p>
+
+        <div class="modal-actions">
+          <button type="button" id="btn-delete-schedule" class="btn-danger hidden">삭제</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn-secondary" id="btn-cancel-schedule">취소</button>
+          <button type="submit" class="btn-primary">저장</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="employees-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>직원 관리</h2>
+      <table class="emp-table">
+        <thead><tr><th>이름</th><th>아이디</th><th>이메일</th><th>권한</th><th></th></tr></thead>
+        <tbody id="emp-tbody"></tbody>
+      </table>
+      <hr />
+      <h3>새 직원 추가</h3>
+      <form id="emp-form">
+        <div class="row">
+          <div><label>이름 *</label><input id="emp-name" required /></div>
+          <div><label>아이디 *</label><input id="emp-username" required /></div>
+        </div>
+        <div class="row">
+          <div><label>이메일 (구글 캘린더 공유용)</label><input id="emp-email" type="email" /></div>
+          <div><label>초기 비밀번호 *</label><input id="emp-password" required /></div>
+        </div>
+        <label class="checkbox-row"><input type="checkbox" id="emp-admin" /> 관리자 권한 부여</label>
+        <p id="emp-error" class="error-text"></p>
+        <div class="modal-actions">
+          <div class="spacer"></div>
+          <button type="button" class="btn-secondary" id="btn-close-employees">닫기</button>
+          <button type="submit" class="btn-primary">추가</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="google-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>구글 캘린더 연동</h2>
+      <p id="google-modal-desc"></p>
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button type="button" class="btn-secondary" id="btn-close-google">닫기</button>
+        <button type="button" class="btn-danger hidden" id="btn-disconnect-google">연동 해제</button>
+        <button type="button" class="btn-primary" id="btn-connect-google">구글 계정 연결하기</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+let currentUser = null;
+let calendar = null;
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function toLocalInputValue(date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+function toRFC3339(localValue) { return `${localValue}:00+09:00`; }
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = '/'; throw new Error('로그인이 필요합니다.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
+  return data;
+}
+
+async function init() {
+  try {
+    currentUser = await api('/api/auth/me');
+  } catch {
+    window.location.href = '/';
+    return;
+  }
+
+  document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+  if (currentUser.role === 'admin') {
+    document.getElementById('btn-employees').style.display = 'inline-block';
+  }
+
+  setupCalendar();
+  refreshGoogleStatus();
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('google') === 'connected') {
+    alert('구글 캘린더 연동이 완료되었습니다!');
+    window.history.replaceState({}, '', '/app.html');
+  }
+}
+
+function setupCalendar() {
+  const el = document.getElementById('calendar');
+  calendar = new FullCalendar.Calendar(el, {
+    locale: 'ko',
+    height: 'auto',
+    headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,listWeek' },
+    initialView: 'dayGridMonth',
+    selectable: true,
+    events: async (info, success, failure) => {
+      try {
+        const rows = await api(`/api/schedules?start=${encodeURIComponent(info.startStr)}&end=${encodeURIComponent(info.endStr)}`);
+        success(rows.map((r) => ({
+          id: r.id,
+          title: r.assignee_name ? `[${r.assignee_name}] ${r.title}` : r.title,
+          start: r.start_at,
+          end: r.end_at,
+          allDay: !!r.all_day,
+          extendedProps: r,
+        })));
+      } catch (err) { failure(err); }
+    },
+    select: (info) => openScheduleModal({ start: info.start, end: info.end, allDay: info.allDay }),
+    eventClick: (info) => openScheduleModal({ existing: info.event.extendedProps }),
+  });
+  calendar.render();
+}
+
+async function refreshGoogleStatus() {
+  const status = await api('/api/google/status');
+  const badge = document.getElementById('google-status');
+  if (status.connected) {
+    badge.textContent = `구글 캘린더 연동됨 (${status.calendarSummary})`;
+    badge.className = 'badge badge-on';
+  } else {
+    badge.textContent = '구글 캘린더 미연동';
+    badge.className = 'badge badge-off';
+  }
+  return status;
+}
+
+const scheduleModal = document.getElementById('schedule-modal');
+
+function openScheduleModal({ start, end, allDay, existing } = {}) {
+  document.getElementById('schedule-error').textContent = '';
+  const form = document.getElementById('schedule-form');
+  form.reset();
+  document.getElementById('btn-delete-schedule').classList.add('hidden');
+
+  if (existing) {
+    document.getElementById('schedule-modal-title').textContent = '일정 수정';
+    document.getElementById('sch-id').value = existing.id;
+    document.getElementById('sch-title').value = existing.title;
+    document.getElementById('sch-allday').checked = !!existing.all_day;
+    document.getElementById('sch-start').value = toLocalInputValue(new Date(existing.start_at));
+    document.getElementById('sch-end').value = toLocalInputValue(new Date(existing.end_at));
+    document.getElementById('sch-assignee').value = existing.assignee_name || '';
+    document.getElementById('sch-location').value = existing.location || '';
+    document.getElementById('sch-desc').value = existing.description || '';
+
+    const canModify = currentUser.role === 'admin' || existing.created_by === currentUser.id;
+    if (canModify) document.getElementById('btn-delete-schedule').classList.remove('hidden');
+    Array.from(form.elements).forEach((el) => (el.disabled = !canModify && el.type !== 'button'));
+  } else {
+    document.getElementById('schedule-modal-title').textContent = '일정 추가';
+    document.getElementById('sch-id').value = '';
+    document.getElementById('sch-allday').checked = !!allDay;
+    const s = start || new Date();
+    const e = end && end.getTime() !== s.getTime() ? end : new Date(s.getTime() + 60 * 60 * 1000);
+    document.getElementById('sch-start').value = toLocalInputValue(s);
+    document.getElementById('sch-end').value = toLocalInputValue(e);
+    Array.from(form.elements).forEach((el) => (el.disabled = false));
+  }
+  scheduleModal.classList.remove('hidden');
+}
+
+document.getElementById('btn-new-schedule').addEventListener('click', () => openScheduleModal());
+document.getElementById('btn-cancel-schedule').addEventListener('click', () => scheduleModal.classList.add('hidden'));
+
+document.getElementById('schedule-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('sch-id').value;
+  const allDay = document.getElementById('sch-allday').checked;
+  const payload = {
+    title: document.getElementById('sch-title').value.trim(),
+    all_day: allDay,
+    start_at: toRFC3339(document.getElementById('sch-start').value),
+    end_at: toRFC3339(document.getElementById('sch-end').value),
+    assignee_name: document.getElementById('sch-assignee').value.trim(),
+    location: document.getElementById('sch-location').value.trim(),
+    description: document.getElementById('sch-desc').value.trim(),
+  };
+
+  try {
+    if (id) {
+      await api(`/api/schedules/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+    } else {
+      await api('/api/schedules', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    scheduleModal.classList.add('hidden');
+    calendar.refetchEvents();
+  } catch (err) {
+    document.getElementById('schedule-error').textContent = err.message;
+  }
+});
+
+document.getElementById('btn-delete-schedule').addEventListener('click', async () => {
+  const id = document.getElementById('sch-id').value;
+  if (!id || !confirm('이 일정을 삭제할까요? 구글 캘린더에서도 함께 삭제됩니다.')) return;
+  try {
+    await api(`/api/schedules/${id}`, { method: 'DELETE' });
+    scheduleModal.classList.add('hidden');
+    calendar.refetchEvents();
+  } catch (err) {
+    document.getElementById('schedule-error').textContent = err.message;
+  }
+});
+
+const employeesModal = document.getElementById('employees-modal');
+
+async function loadEmployees() {
+  const rows = await api('/api/employees');
+  const tbody = document.getElementById('emp-tbody');
+  tbody.innerHTML = '';
+  rows.forEach((emp) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${emp.name}</td>
+      <td>${emp.username}</td>
+      <td>${emp.email || ''}</td>
+      <td>${emp.role === 'admin' ? '관리자' : '직원'}</td>
+      <td>${emp.id === currentUser.id ? '' : `<button data-id="${emp.id}" class="btn-secondary btn-delete-emp">삭제</button>`}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('.btn-delete-emp').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('이 직원 계정을 삭제할까요?')) return;
+      await api(`/api/employees/${btn.dataset.id}`, { method: 'DELETE' });
+      loadEmployees();
+    });
+  });
+}
+
+document.getElementById('btn-employees').addEventListener('click', () => {
+  employeesModal.classList.remove('hidden');
+  loadEmployees();
+});
+document.getElementById('btn-close-employees').addEventListener('click', () => employeesModal.classList.add('hidden'));
+
+document.getElementById('emp-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const payload = {
+    name: document.getElementById('emp-name').value.trim(),
+    username: document.getElementById('emp-username').value.trim(),
+    email: document.getElementById('emp-email').value.trim(),
+    password: document.getElementById('emp-password').value,
+    role: document.getElementById('emp-admin').checked ? 'admin' : 'employee',
+  };
+  try {
+    await api('/api/employees', { method: 'POST', body: JSON.stringify(payload) });
+    document.getElementById('emp-form').reset();
+    document.getElementById('emp-error').textContent = '';
+    loadEmployees();
+  } catch (err) {
+    document.getElementById('emp-error').textContent = err.message;
+  }
+});
+
+const googleModal = document.getElementById('google-modal');
+
+document.getElementById('btn-google').addEventListener('click', async () => {
+  const status = await refreshGoogleStatus();
+  const desc = document.getElementById('google-modal-desc');
+  const disconnectBtn = document.getElementById('btn-disconnect-google');
+  const connectBtn = document.getElementById('btn-connect-google');
+
+  if (status.connected) {
+    desc.textContent = `현재 "${status.calendarSummary}" 캘린더에 일정이 자동으로 동기화되고 있습니다.`;
+    disconnectBtn.classList.remove('hidden');
+    connectBtn.textContent = '다시 연결하기';
+  } else {
+    desc.textContent = currentUser.role === 'admin'
+      ? '관리자 구글 계정을 연결하면, 이후 모든 일정이 회사 공용 캘린더에 자동으로 기재됩니다.'
+      : '아직 구글 캘린더가 연동되지 않았습니다. 관리자에게 연동을 요청해주세요.';
+    disconnectBtn.classList.add('hidden');
+    connectBtn.textContent = '구글 계정 연결하기';
+  }
+  connectBtn.style.display = currentUser.role === 'admin' ? 'inline-block' : 'none';
+  googleModal.classList.remove('hidden');
+});
+
+document.getElementById('btn-close-google').addEventListener('click', () => googleModal.classList.add('hidden'));
+
+document.getElementById('btn-connect-google').addEventListener('click', async () => {
+  try {
+    const { url } = await api('/api/google/auth-url');
+    window.location.href = url;
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+document.getElementById('btn-disconnect-google').addEventListener('click', async () => {
+  if (!confirm('구글 캘린더 연동을 해제할까요? 기존에 등록된 이벤트는 구글 캘린더에 남아있지만 더 이상 동기화되지 않습니다.')) return;
+  await api('/api/google/disconnect', { method: 'POST' });
+  refreshGoogleStatus();
+  googleModal.classList.add('hidden');
+});
+
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  await api('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/';
+});
+
+init();
+</script>
+</body>
+</html>

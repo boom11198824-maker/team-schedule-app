@@ -737,6 +737,18 @@ app.post('/api/google/disconnect', requireAdmin, (req, res) => { disconnectGoogl
 
 /* ---- 정적 페이지 ---- */
 
+app.use('/icons', express.static(path.join(__dirname, 'icons'), { maxAge: '7d' }));
+
+app.get('/manifest.json', (req, res) => {
+  res.sendFile(path.join(__dirname, 'manifest.json'));
+});
+
+app.get('/sw.js', (req, res) => {
+  res.set('Content-Type', 'application/javascript');
+  res.set('Service-Worker-Allowed', '/');
+  res.sendFile(path.join(__dirname, 'sw.js'));
+});
+
 app.get('/app.html', (req, res) => {
   if (!req.session || !req.session.userId) return res.redirect('/');
   res.sendFile(path.join(__dirname, 'app.html'));

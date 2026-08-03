@@ -1,0 +1,16 @@
+{
+  "name": "팀 스케줄 · 사건관리",
+  "short_name": "팀 스케줄",
+  "description": "구글 캘린더와 자동 연동되는 직원 일정 및 법원 사건 관리",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#4f6df5",
+  "theme_color": "#4f6df5",
+  "lang": "ko",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

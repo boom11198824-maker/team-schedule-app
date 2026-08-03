@@ -106,6 +106,9 @@ button.btn-danger:hover { background: #fecaca; }
 .emp-table button { font-size: 12px; padding: 4px 8px; }
 
 .fc-event { cursor: pointer; }
+.fc-event-title, .fc-event-time { overflow: hidden; text-overflow: ellipsis; }
+.fc-daygrid-event { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 4px; }
+.fc-timegrid-event .fc-event-main { padding: 2px 4px; }
 
 @media (max-width: 640px) {
   .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
@@ -351,10 +354,11 @@ function setupCalendar() {
   calendar = new FullCalendar.Calendar(el, {
     locale: 'ko',
     height: 'auto',
-    headerToolbar: isMobile
-      ? { left: 'prev,next today', center: 'title', right: 'listWeek,dayGridMonth' }
-      : { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,listWeek' },
-    initialView: isMobile ? 'listWeek' : 'dayGridMonth',
+    headerToolbar: { left: 'prev,next today', center: 'title', right: 'timeGridDay,timeGridWeek,dayGridMonth' },
+    buttonText: { today: '오늘', month: '월', week: '주', day: '일' },
+    initialView: isMobile ? 'timeGridDay' : 'dayGridMonth',
+    eventDisplay: 'block',
+    nowIndicator: true,
     dayMaxEvents: true,
     selectable: true,
     events: async (info, success, failure) => {
@@ -430,8 +434,38 @@ function openScheduleModal({ start, end, allDay, existing } = {}) {
     document.getElementById('sch-assignee').value = currentUser.name;
     Array.from(form.elements).forEach((el) => (el.disabled = false));
   }
+  syncPrevStartValue();
   scheduleModal.classList.remove('hidden');
 }
+
+/* 시작일시를 바꾸면 종료일시가 (기존 소요시간을 유지한 채) 함께 따라가도록 처리
+   — 종료일시가 시작일시보다 과거로 남는 것을 방지 */
+const schStartInput = document.getElementById('sch-start');
+const schEndInput = document.getElementById('sch-end');
+let prevSchStartValue = null;
+
+function syncPrevStartValue() { prevSchStartValue = schStartInput.value; }
+
+schStartInput.addEventListener('change', () => {
+  const newStart = new Date(schStartInput.value);
+  if (isNaN(newStart.getTime())) { syncPrevStartValue(); return; }
+
+  const oldStart = prevSchStartValue ? new Date(prevSchStartValue) : null;
+  const currentEnd = new Date(schEndInput.value);
+  const DEFAULT_DURATION = 60 * 60 * 1000;
+
+  let duration = DEFAULT_DURATION;
+  if (oldStart && !isNaN(oldStart.getTime()) && !isNaN(currentEnd.getTime())) {
+    const existingDuration = currentEnd.getTime() - oldStart.getTime();
+    if (existingDuration > 0) duration = existingDuration;
+  }
+
+  let newEndTime = newStart.getTime() + duration;
+  if (newEndTime < newStart.getTime()) newEndTime = newStart.getTime();
+
+  schEndInput.value = toLocalInputValue(new Date(newEndTime));
+  syncPrevStartValue();
+});
 
 document.getElementById('btn-new-schedule').addEventListener('click', () => openScheduleModal());
 document.getElementById('btn-cancel-schedule').addEventListener('click', () => scheduleModal.classList.add('hidden'));

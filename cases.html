@@ -119,6 +119,7 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
 .card.warn { border-left-color: var(--status-warning); }
 .card.good { border-left-color: var(--status-good); opacity: 0.75; }
 .card.muted { border-left-color: var(--gridline); }
+.card.unmatched { border-left-color: var(--status-serious); }
 
 .card .badge {
   flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap;
@@ -127,6 +128,7 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
 .card.warn .badge { background: var(--status-warning-bg); color: #8a5a00; }
 .card.good .badge { background: var(--status-good-bg); color: var(--status-good); }
 .card.muted .badge { background: var(--status-muted-bg); color: var(--text-secondary); }
+.card.unmatched .badge { background: var(--status-serious-bg); color: var(--status-serious); }
 
 .card .body { flex: 1; min-width: 0; }
 .card .title { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
@@ -403,6 +405,7 @@ function computeDDay(dateStr) {
 }
 
 function classify(task) {
+  if (task.source === 'sheet' && task.matched === false) return 'unmatched';
   if (task.status === '완료') return 'good';
   if (task.dDay < 0) return 'crit';
   if (task.dDay === 0) return 'crit';
@@ -425,22 +428,27 @@ function applyFilters(rows) {
 
 function cardHTML(t) {
   const cls = classify(t);
+  const isUnmatched = cls === 'unmatched';
   let badgeText;
-  if (t.status === '완료') badgeText = '완료';
+  if (isUnmatched) badgeText = '⚠️ 미등록';
+  else if (t.status === '완료') badgeText = '완료';
   else if (t.dDay < 0) badgeText = `D+${Math.abs(t.dDay)} 초과`;
   else if (t.dDay === 0) badgeText = 'D-DAY';
   else badgeText = `D-${t.dDay}`;
 
-  const icon = t.status === '완료' ? '✅' : (t.status === '예정' && t.dDay < 0) ? '⛔' : (t.status === '예정' && t.dDay === 0) ? '🔴' : (t.status !== '완료' && t.dDay <= 3) ? '🟡' : '🔵';
+  const icon = isUnmatched ? '⚠️' : t.status === '완료' ? '✅' : (t.status === '예정' && t.dDay < 0) ? '⛔' : (t.status === '예정' && t.dDay === 0) ? '🔴' : (t.status !== '완료' && t.dDay <= 3) ? '🟡' : '🔵';
   const receivedPart = t.received_date ? ` · 수령 ${escapeHTML(t.received_date)}` : '';
-  const canQuickComplete = t.status !== '완료' && t.source !== 'sheet';
+  const canQuickComplete = t.status !== '완료' && t.source !== 'sheet' && !isUnmatched;
+  const metaText = isUnmatched
+    ? '등록된 사건 목록에서 이름을 찾지 못했습니다. 클릭해서 사건을 등록해주세요.'
+    : `담당: <b>${escapeHTML(t.assignee_name || '-')}</b> · ${escapeHTML(t.court || '')} ${escapeHTML(t.court_case_no || '')}${receivedPart}`;
 
   return `
-    <div class="card ${cls}" data-case-id="${t.case_id}">
+    <div class="card ${cls}" data-case-id="${t.case_id != null ? t.case_id : ''}" data-matched="${isUnmatched ? 'false' : 'true'}" data-client-name="${escapeHTML(t.client_name || '')}">
       <span class="badge">${badgeText}</span>
       <div class="body">
         <p class="title">${icon} ${escapeHTML(t.client_name)} · ${escapeHTML(t.task_type)}</p>
-        <p class="meta">담당: <b>${escapeHTML(t.assignee_name || '-')}</b> · ${escapeHTML(t.court || '')} ${escapeHTML(t.court_case_no || '')}${receivedPart}</p>
+        <p class="meta">${metaText}</p>
       </div>
       <div class="due">${t.due_date}</div>
       ${canQuickComplete ? `<div class="actions"><button type="button" class="btn-small" data-quick-complete="${t.id}">완료 처리</button></div>` : ''}
@@ -486,7 +494,15 @@ function render() {
     btn.addEventListener('click', (e) => { e.stopPropagation(); quickComplete(btn.dataset.quickComplete); });
   });
   document.querySelectorAll('.card').forEach((card) => {
-    card.addEventListener('click', () => openCaseModal(Number(card.dataset.caseId)));
+    card.addEventListener('click', () => {
+      if (card.dataset.matched === 'false') {
+        // 구글시트의 의뢰인명이 등록된 사건과 매칭되지 않음 → 사건 추가 모달을 이름 채워서 열어준다
+        openCaseModal(null);
+        document.getElementById('case-client').value = card.dataset.clientName || '';
+      } else {
+        openCaseModal(Number(card.dataset.caseId));
+      }
+    });
   });
 }
 

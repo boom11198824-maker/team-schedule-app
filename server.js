@@ -364,28 +364,28 @@ async function googleUnshareCalendar(email) {
 /* 구글 시트 연동 (사건목록: 앱이 관리 / 일정_보정관리: 직원이 시트에서 직접 입력) */
 /* ------------------------------------------------------------------ */
 /* [사건목록] 탭은 계속 이 앱(SQLite)이 원본이며, 내보내기 버튼을 누를 때마다
- * 최신 사건 목록으로 갱신됩니다 (사건ID를 직원이 시트에서 찾아 쓸 수 있도록).
+ * 최신 사건 목록으로 갱신됩니다. 관리자/직원이 참고용으로 열람하는 용도입니다.
  *
  * [일정_보정관리] 탭은 스프레드시트가 처음 만들어질 때 딱 한 번 현재 데이터로
  * 시드(seed)된 뒤에는 절대 앱이 덮어쓰지 않습니다 - 그 이후로는 직원이 시트에
  * 직접 행을 추가/수정하는 것이 원본(source of truth)이 되고, 관리자 대시보드는
- * 이 탭을 실시간으로 읽어와 보여줍니다 (읽기 전용 뷰). */
+ * 이 탭을 실시간으로 읽어와 보여줍니다 (읽기 전용 뷰).
+ *
+ * 직원이 매번 사건ID를 찾아 입력하는 번거로움을 없애기 위해, 사건을 찾는 키는
+ * "의뢰인명"입니다 (동명이인이 있을 때만 선택적으로 사건번호를 같이 적으면 됨).
+ * 서류에 인쇄된 이름/사건번호를 그대로 옮겨 적으면 되므로 앱 전용 ID를 외우거나
+ * 다른 탭을 오가며 찾아볼 필요가 없습니다. */
 
 const SHEETS_TITLE_CASES = '사건목록';
 const SHEETS_TITLE_TASKS = '일정_보정관리';
-const TASKS_SHEET_HEADER = ['사건ID', '의뢰인명', '업무구분/서류명', '수령일', '마감예정일', '처리상태', '담당자', '웹앱 표시용 타이틀', '메모'];
+// 직원이 실제로 채우는 건 의뢰인명·업무구분·마감예정일 3개뿐이고 나머지는 선택 사항
+const TASKS_SHEET_HEADER = ['의뢰인명 *', '업무구분/서류명 *', '수령일', '마감예정일 *', '처리상태', '담당자', '사건번호(동명이인 있을 때만)', '메모'];
 
 async function getSheetsAuthorizedClient() {
   return getAuthorizedGoogleClient();
 }
 
 function caseIdToken(id) { return `CASE_${String(id).padStart(3, '0')}`; }
-
-// "CASE_001", "001", "1" 등 직원이 느슨하게 입력해도 숫자만 뽑아 사건ID로 인식
-function parseCaseIdToken(token) {
-  const digits = String(token || '').replace(/[^0-9]/g, '');
-  return digits ? parseInt(digits, 10) : null;
-}
 
 function buildCasesSheetRows() {
   const rows = db.prepare('SELECT * FROM cases ORDER BY id ASC').all();
@@ -400,19 +400,14 @@ function buildCasesSheetRows() {
 
 function buildTasksSeedRows() {
   const rows = db.prepare(`
-    SELECT t.*, c.client_name AS client_name
+    SELECT t.*, c.client_name AS client_name, c.court_case_no AS court_case_no
     FROM case_tasks t LEFT JOIN cases c ON c.id = t.case_id
     ORDER BY t.due_date ASC
   `).all();
-  const body = rows.map((t) => {
-    const titleSuffix = t.status === '완료' ? '' : '예정';
-    const displayTitle = `${t.client_name || ''} ${t.task_type}${titleSuffix}`.trim();
-    return [
-      caseIdToken(t.case_id),
-      t.client_name || '', t.task_type || '', t.received_date || '', t.due_date || '',
-      t.status || '', t.assignee_name || '', displayTitle, t.memo || '',
-    ];
-  });
+  const body = rows.map((t) => [
+    t.client_name || '', t.task_type || '', t.received_date || '', t.due_date || '',
+    t.status || '', t.assignee_name || '', t.court_case_no || '', t.memo || '',
+  ]);
   return [TASKS_SHEET_HEADER, ...body];
 }
 
@@ -498,6 +493,25 @@ async function exportCasesToGoogleSheet() {
   }
 }
 
+function normalizeMatchKey(s) { return String(s || '').trim().replace(/\s+/g, ''); }
+
+// 의뢰인명(+선택적으로 사건번호)으로 사건을 찾는다. 동명이인이 여러 명이면
+// 사건번호가 일치하는 쪽을 우선하고, 그래도 못 정하면 가장 최근에 등록된 사건을 사용.
+function matchCaseByNameAndCaseNo(cases, clientName, courtCaseNo) {
+  const nameKey = normalizeMatchKey(clientName);
+  if (!nameKey) return null;
+  const candidates = cases.filter((c) => normalizeMatchKey(c.client_name) === nameKey);
+  if (!candidates.length) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  const caseNoKey = normalizeMatchKey(courtCaseNo);
+  if (caseNoKey) {
+    const exact = candidates.find((c) => normalizeMatchKey(c.court_case_no) === caseNoKey);
+    if (exact) return exact;
+  }
+  return candidates.reduce((latest, c) => (c.id > latest.id ? c : latest), candidates[0]);
+}
+
 // 관리자 대시보드용: 일정_보정관리 탭을 실시간으로 읽어와 case_tasks와 같은 모양으로 변환.
 // 시트가 연동되어 있지 않으면 null을 반환해서 호출 측이 SQLite로 폴백하도록 한다.
 async function readTasksFromSheetIfConnected() {
@@ -510,39 +524,38 @@ async function readTasksFromSheetIfConnected() {
   const sheets = google.sheets({ version: 'v4', auth: client });
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: authRow.sheets_spreadsheet_id,
-    range: `${SHEETS_TITLE_TASKS}!A2:I100000`,
+    range: `${SHEETS_TITLE_TASKS}!A2:H100000`,
   });
   const rows = resp.data.values || [];
-
   const cases = db.prepare('SELECT * FROM cases').all();
-  const caseById = new Map(cases.map((c) => [c.id, c]));
 
   const tasks = [];
   let skipped = 0;
   rows.forEach((row, i) => {
-    const [caseIdRaw, clientNameRaw, taskType, receivedDate, dueDate, statusRaw, assignee, , memo] = row;
-    const caseId = parseCaseIdToken(caseIdRaw);
-    if (!caseId || !taskType || !dueDate) { if ((row || []).some(Boolean)) skipped++; return; }
-    const c = caseById.get(caseId);
+    const [clientNameRaw, taskType, receivedDate, dueDate, statusRaw, assignee, courtCaseNoRaw, memo] = row;
+    if (!clientNameRaw || !taskType || !dueDate) { if ((row || []).some(Boolean)) skipped++; return; }
+
+    const matchedCase = matchCaseByNameAndCaseNo(cases, clientNameRaw, courtCaseNoRaw);
     const status = CASE_TASK_STATUSES.includes(statusRaw) ? statusRaw : '예정';
     tasks.push({
       id: `sheet-${i}`,
       source: 'sheet',
       sheetRow: i + 2,
-      case_id: caseId,
+      case_id: matchedCase ? matchedCase.id : null,
+      matched: !!matchedCase,
       task_type: taskType,
       received_date: receivedDate || '',
       due_date: dueDate,
       status,
-      assignee_name: assignee || (c && c.assignee_name) || '',
+      assignee_name: assignee || (matchedCase && matchedCase.assignee_name) || '',
       memo: memo || '',
-      client_name: (c && c.client_name) || clientNameRaw || '',
-      court: (c && c.court) || '',
-      court_case_no: (c && c.court_case_no) || '',
+      client_name: clientNameRaw,
+      court: (matchedCase && matchedCase.court) || '',
+      court_case_no: (matchedCase && matchedCase.court_case_no) || courtCaseNoRaw || '',
     });
   });
 
-  if (skipped > 0) console.warn(`구글시트 일정_보정관리: 형식이 맞지 않아 건너뛴 행 ${skipped}건 (사건ID/업무구분/마감예정일 확인 필요)`);
+  if (skipped > 0) console.warn(`구글시트 일정_보정관리: 형식이 맞지 않아 건너뛴 행 ${skipped}건 (의뢰인명/업무구분/마감예정일 확인 필요)`);
   return tasks;
 }
 

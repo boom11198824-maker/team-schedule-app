@@ -92,7 +92,23 @@ CREATE TABLE IF NOT EXISTS case_tasks (
   FOREIGN KEY (case_id) REFERENCES cases(id),
   FOREIGN KEY (created_by) REFERENCES employees(id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_case_tasks_case_id ON case_tasks(case_id);
+CREATE INDEX IF NOT EXISTS idx_case_tasks_due_date ON case_tasks(due_date);
+CREATE INDEX IF NOT EXISTS idx_case_tasks_status ON case_tasks(status);
 `);
+
+// 구글시트 내보내기(백업/공유용) 정보를 저장할 컬럼 - 기존 DB에 없으면 추가
+try {
+  db.exec("ALTER TABLE google_auth ADD COLUMN sheets_spreadsheet_id TEXT");
+} catch (err) {
+  if (!String(err.message).includes('duplicate column')) throw err;
+}
+try {
+  db.exec("ALTER TABLE google_auth ADD COLUMN sheets_last_synced_at TEXT");
+} catch (err) {
+  if (!String(err.message).includes('duplicate column')) throw err;
+}
 
 // 기존 DB에 category 컬럼이 없는 경우를 위한 마이그레이션 (이미 있으면 조용히 무시)
 try {
@@ -170,7 +186,10 @@ function requireAdmin(req, res, next) {
 /* 구글 캘린더 연동                                                     */
 /* ------------------------------------------------------------------ */
 
-const GOOGLE_SCOPES = ['https://www.googleapis.com/auth/calendar'];
+const GOOGLE_SCOPES = [
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/spreadsheets',
+];
 
 function getOAuthClient() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -326,6 +345,111 @@ async function googleUnshareCalendar(email) {
     await calendar.acl.delete({ calendarId: row.calendar_id, ruleId: `user:${email}` });
   } catch (err) {
     if (err.code !== 404) throw err;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 구글 시트 내보내기 (사건관리 데이터 백업/공유용, 1-way export)             */
+/* ------------------------------------------------------------------ */
+/* 실제 데이터 저장소(source of truth)는 계속 SQLite입니다. 이 스프레드시트는
+ * 세무사 공유, 엑셀 열람, 외부 백업 등을 위한 읽기용 사본이며, 여기서 수정한
+ * 내용은 웹앱으로 다시 반영되지 않습니다. */
+
+const SHEETS_TITLE_CASES = '사건목록';
+const SHEETS_TITLE_TASKS = '일정_보정관리';
+
+async function getSheetsAuthorizedClient() {
+  const client = await getAuthorizedGoogleClient();
+  return client;
+}
+
+function buildCasesSheetRows() {
+  const rows = db.prepare('SELECT * FROM cases ORDER BY id ASC').all();
+  const header = ['사건ID', '의뢰인명', '연락처', '관할법원', '사건번호', '담당직원', '메모', '등록일'];
+  const body = rows.map((c) => [
+    `CASE_${String(c.id).padStart(3, '0')}`,
+    c.client_name || '', c.phone || '', c.court || '', c.court_case_no || '',
+    c.assignee_name || '', c.memo || '', c.created_at || '',
+  ]);
+  return [header, ...body];
+}
+
+function buildTasksSheetRows() {
+  const rows = db.prepare(`
+    SELECT t.*, c.client_name AS client_name, c.court AS court, c.court_case_no AS court_case_no
+    FROM case_tasks t LEFT JOIN cases c ON c.id = t.case_id
+    ORDER BY t.due_date ASC
+  `).all();
+  const header = ['사건ID', '의뢰인명', '업무구분/서류명', '마감예정일', '처리상태', '담당자', '웹앱 표시용 타이틀', '메모'];
+  const body = rows.map((t) => {
+    const titleSuffix = t.status === '완료' ? '' : '예정';
+    const displayTitle = `${t.client_name || ''} ${t.task_type}${titleSuffix}`.trim();
+    return [
+      `CASE_${String(t.case_id).padStart(3, '0')}`,
+      t.client_name || '', t.task_type || '', t.due_date || '',
+      t.status || '', t.assignee_name || '', displayTitle, t.memo || '',
+    ];
+  });
+  return [header, ...body];
+}
+
+async function exportCasesToGoogleSheet(adminUserId) {
+  const client = await getSheetsAuthorizedClient();
+  if (!client) {
+    const err = new Error('구글 계정이 연동되어 있지 않습니다. 먼저 구글 캘린더 연동을 진행해주세요.');
+    err.code = 'NOT_CONNECTED';
+    throw err;
+  }
+  const sheets = google.sheets({ version: 'v4', auth: client });
+  const authRow = getStoredGoogleAuth();
+  let spreadsheetId = authRow && authRow.sheets_spreadsheet_id;
+
+  try {
+    if (!spreadsheetId) {
+      const created = await sheets.spreadsheets.create({
+        requestBody: {
+          properties: { title: '사건관리 데이터 (팀 스케줄 앱 백업)' },
+          sheets: [
+            { properties: { title: SHEETS_TITLE_CASES } },
+            { properties: { title: SHEETS_TITLE_TASKS } },
+          ],
+        },
+      });
+      spreadsheetId = created.data.spreadsheetId;
+      db.prepare('UPDATE google_auth SET sheets_spreadsheet_id = ? WHERE id = 1').run(spreadsheetId);
+    }
+
+    const casesRows = buildCasesSheetRows();
+    const tasksRows = buildTasksSheetRows();
+
+    // 매번 두 탭 전체를 지우고 최신 스냅샷으로 다시 씀 (증분 동기화 대신 전체 덮어쓰기 -
+    // 사건관리 데이터 규모(수백~수천 행)에서는 이 방식이 가장 단순하고 사고 위험이 적음)
+    await sheets.spreadsheets.values.clear({ spreadsheetId, range: `${SHEETS_TITLE_CASES}!A1:Z100000` });
+    await sheets.spreadsheets.values.clear({ spreadsheetId, range: `${SHEETS_TITLE_TASKS}!A1:Z100000` });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId, range: `${SHEETS_TITLE_CASES}!A1`, valueInputOption: 'RAW', requestBody: { values: casesRows },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId, range: `${SHEETS_TITLE_TASKS}!A1`, valueInputOption: 'RAW', requestBody: { values: tasksRows },
+    });
+
+    const syncedAt = new Date().toISOString();
+    db.prepare('UPDATE google_auth SET sheets_last_synced_at = ? WHERE id = 1').run(syncedAt);
+
+    return {
+      url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+      syncedAt,
+      caseCount: casesRows.length - 1,
+      taskCount: tasksRows.length - 1,
+    };
+  } catch (err) {
+    // 기존에 연동된 계정이 (구)캘린더 권한만 갖고 있어 시트 권한이 없는 경우
+    if (err.code === 403 || /insufficient|permission/i.test(err.message || '')) {
+      const wrapped = new Error('구글 계정에 스프레드시트 권한이 없습니다. "구글 캘린더 연동"에서 다시 연결해주세요 (시트 권한이 추가되었습니다).');
+      wrapped.code = 'NEEDS_RECONSENT';
+      throw wrapped;
+    }
+    throw err;
   }
 }
 
@@ -627,9 +751,14 @@ function caseTaskToGoogleEvent(task) {
 
 app.get('/api/case-tasks', requireLogin, (req, res) => {
   const { status, caseId } = req.query;
-  let rows = db.prepare('SELECT * FROM case_tasks ORDER BY due_date ASC').all();
-  if (status) rows = rows.filter((r) => r.status === status);
-  if (caseId) rows = rows.filter((r) => String(r.case_id) === String(caseId));
+  const conditions = [];
+  const params = [];
+  if (status) { conditions.push('status = ?'); params.push(status); }
+  if (caseId) { conditions.push('case_id = ?'); params.push(caseId); }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  // case_id/due_date/status 에 인덱스가 있어 데이터가 수천 건으로 늘어나도
+  // 필터가 걸린 조회는 빠르게 동작합니다 (전체 스캔 대신 인덱스 탐색).
+  const rows = db.prepare(`SELECT * FROM case_tasks ${where} ORDER BY due_date ASC`).all(...params);
   res.json(rows.map(caseTaskWithCase));
 });
 
@@ -703,6 +832,28 @@ app.delete('/api/case-tasks/:id', requireLogin, async (req, res) => {
   } catch (err) { console.error('구글 캘린더 삭제 실패:', err.message); }
 
   res.json({ ok: true });
+});
+
+/* ---- /api/sheets (사건관리 데이터 -> 구글시트 내보내기, 백업/공유용) ---- */
+
+app.get('/api/sheets/status', requireLogin, (req, res) => {
+  const row = getStoredGoogleAuth();
+  const spreadsheetId = row && row.sheets_spreadsheet_id;
+  res.json({
+    exported: !!spreadsheetId,
+    url: spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : null,
+    lastSyncedAt: (row && row.sheets_last_synced_at) || null,
+  });
+});
+
+app.post('/api/sheets/export', requireAdmin, async (req, res) => {
+  try {
+    const result = await exportCasesToGoogleSheet(req.user.id);
+    res.json(result);
+  } catch (err) {
+    const status = err.code === 'NOT_CONNECTED' || err.code === 'NEEDS_RECONSENT' ? 400 : 500;
+    res.status(status).json({ error: err.message, code: err.code || null });
+  }
 });
 
 /* ---- /api/google ---- */

@@ -213,10 +213,12 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
     </div>
     <div class="topbar-right">
       <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
+      <button id="btn-sheets-export" class="btn-secondary" style="display:none">📊 구글시트로 내보내기</button>
       <span id="user-name" class="user-name"></span>
       <button id="btn-logout" class="btn-secondary">로그아웃</button>
     </div>
   </header>
+  <p id="sheets-status" class="empty-note hidden" style="text-align:left; padding:6px 20px 0;"></p>
 
   <main>
     <div class="stat-row">
@@ -674,6 +676,49 @@ document.getElementById('btn-logout').addEventListener('click', async () => {
   window.location.href = '/';
 });
 
+/* ---- 구글시트로 내보내기 (백업/공유용, 1-way. 실제 저장소는 계속 이 앱입니다) ---- */
+
+function formatSyncedAt(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const p = { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, da: d.getUTCDate(),
+    h: (d.getUTCHours() + 9) % 24, mi: d.getUTCMinutes() };
+  // 날짜가 UTC+9로 넘어갈 수 있어 시각만 보정, 날짜 표기는 대략적인 안내용
+  return `${p.y}.${String(p.mo).padStart(2,'0')}.${String(p.da).padStart(2,'0')} ${String(p.h).padStart(2,'0')}:${String(p.mi).padStart(2,'0')}`;
+}
+
+async function refreshSheetsStatus() {
+  const statusEl = document.getElementById('sheets-status');
+  try {
+    const status = await api('/api/sheets/status');
+    if (status.exported) {
+      statusEl.innerHTML = `📊 <a href="${status.url}" target="_blank" rel="noopener">구글시트에서 보기</a> · 마지막 동기화: ${formatSyncedAt(status.lastSyncedAt)}`;
+      statusEl.classList.remove('hidden');
+    } else {
+      statusEl.classList.add('hidden');
+    }
+  } catch { statusEl.classList.add('hidden'); }
+}
+
+document.getElementById('btn-sheets-export').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '내보내는 중...';
+  try {
+    const result = await api('/api/sheets/export', { method: 'POST' });
+    await refreshSheetsStatus();
+    if (confirm(`구글시트로 내보냈습니다 (사건 ${result.caseCount}건 · 일정 ${result.taskCount}건).\n지금 열어볼까요?`)) {
+      window.open(result.url, '_blank');
+    }
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+
 async function init() {
   try {
     currentUser = await api('/api/auth/me');
@@ -682,6 +727,10 @@ async function init() {
     return;
   }
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+  if (currentUser.role === 'admin') {
+    document.getElementById('btn-sheets-export').style.display = 'inline-block';
+    refreshSheetsStatus();
+  }
   await loadAll();
 }
 

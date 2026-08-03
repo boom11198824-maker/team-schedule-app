@@ -63,6 +63,35 @@ CREATE TABLE IF NOT EXISTS google_auth (
   connected_by INTEGER,
   connected_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS cases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  client_name TEXT NOT NULL,
+  phone TEXT,
+  court TEXT,
+  court_case_no TEXT,
+  assignee_name TEXT,
+  memo TEXT,
+  created_by INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (created_by) REFERENCES employees(id)
+);
+
+CREATE TABLE IF NOT EXISTS case_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL,
+  task_type TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT '예정',
+  assignee_name TEXT,
+  memo TEXT,
+  created_by INTEGER NOT NULL,
+  google_event_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (case_id) REFERENCES cases(id),
+  FOREIGN KEY (created_by) REFERENCES employees(id)
+);
 `);
 
 // 기존 DB에 category 컬럼이 없는 경우를 위한 마이그레이션 (이미 있으면 조용히 무시)
@@ -509,6 +538,173 @@ app.delete('/api/schedules/:id', requireLogin, async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---- /api/cases (사건 관리) ---- */
+
+app.get('/api/cases', requireLogin, (req, res) => {
+  res.json(db.prepare('SELECT * FROM cases ORDER BY id DESC').all());
+});
+
+app.post('/api/cases', requireLogin, (req, res) => {
+  const { client_name, phone, court, court_case_no, assignee_name, memo } = req.body || {};
+  if (!client_name) return res.status(400).json({ error: '의뢰인명은 필수입니다.' });
+
+  const info = db
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, created_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(client_name, phone || '', court || '', court_case_no || '', assignee_name || '', memo || '', req.user.id);
+
+  res.status(201).json(db.prepare('SELECT * FROM cases WHERE id = ?').get(info.lastInsertRowid));
+});
+
+app.patch('/api/cases/:id', requireLogin, (req, res) => {
+  const existing = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  const { client_name, phone, court, court_case_no, assignee_name, memo } = req.body || {};
+  const updated = {
+    client_name: client_name ?? existing.client_name,
+    phone: phone ?? existing.phone,
+    court: court ?? existing.court,
+    court_case_no: court_case_no ?? existing.court_case_no,
+    assignee_name: assignee_name ?? existing.assignee_name,
+    memo: memo ?? existing.memo,
+  };
+  db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=? WHERE id = ?`)
+    .run(updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo, existing.id);
+
+  res.json(db.prepare('SELECT * FROM cases WHERE id = ?').get(existing.id));
+});
+
+app.delete('/api/cases/:id', requireLogin, async (req, res) => {
+  const existing = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  const tasks = db.prepare('SELECT * FROM case_tasks WHERE case_id = ?').all(existing.id);
+  for (const t of tasks) {
+    try { if (t.google_event_id) await googleDeleteEvent(t.google_event_id); } catch (err) { console.error('구글 캘린더 삭제 실패:', err.message); }
+  }
+  db.prepare('DELETE FROM case_tasks WHERE case_id = ?').run(existing.id);
+  db.prepare('DELETE FROM cases WHERE id = ?').run(existing.id);
+
+  res.json({ ok: true });
+});
+
+/* ---- /api/case-tasks (사건별 서류/보정 일정) ---- */
+
+const CASE_TASK_STATUSES = ['예정', '진행중', '완료'];
+
+function caseTaskWithCase(task) {
+  const c = db.prepare('SELECT client_name, court, court_case_no FROM cases WHERE id = ?').get(task.case_id) || {};
+  return Object.assign({}, task, {
+    client_name: c.client_name || '',
+    court: c.court || '',
+    court_case_no: c.court_case_no || '',
+  });
+}
+
+// 사건에 딸린 서류/보정 일정을 구글 캘린더용 이벤트 형태로 변환 (하루종일 이벤트)
+function caseTaskToGoogleEvent(task) {
+  const c = db.prepare('SELECT client_name, court, court_case_no FROM cases WHERE id = ?').get(task.case_id) || {};
+  const titleSuffix = task.status === '완료' ? '' : '예정';
+  return {
+    title: `${c.client_name || ''} ${task.task_type}${titleSuffix}`.trim(),
+    description: [
+      `사건: ${c.client_name || ''}`,
+      c.court || c.court_case_no ? `관할: ${[c.court, c.court_case_no].filter(Boolean).join(' ')}` : null,
+      `업무: ${task.task_type}`,
+      `상태: ${task.status}`,
+      task.assignee_name ? `담당자: ${task.assignee_name}` : null,
+      task.memo || null,
+    ].filter(Boolean).join('\n'),
+    location: '',
+    all_day: 1,
+    start_at: `${task.due_date}T00:00:00+09:00`,
+    end_at: `${task.due_date}T00:00:00+09:00`,
+    assignee_name: task.assignee_name,
+    category: '법원',
+  };
+}
+
+app.get('/api/case-tasks', requireLogin, (req, res) => {
+  const { status, caseId } = req.query;
+  let rows = db.prepare('SELECT * FROM case_tasks ORDER BY due_date ASC').all();
+  if (status) rows = rows.filter((r) => r.status === status);
+  if (caseId) rows = rows.filter((r) => String(r.case_id) === String(caseId));
+  res.json(rows.map(caseTaskWithCase));
+});
+
+app.post('/api/case-tasks', requireLogin, async (req, res) => {
+  const { case_id, task_type, due_date, assignee_name, memo, status } = req.body || {};
+  if (!case_id || !task_type || !due_date) return res.status(400).json({ error: '사건, 업무구분, 마감예정일은 필수입니다.' });
+
+  const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(case_id);
+  if (!caseRow) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  const safeStatus = CASE_TASK_STATUSES.includes(status) ? status : '예정';
+  const info = db
+    .prepare(`INSERT INTO case_tasks (case_id, task_type, due_date, status, assignee_name, memo, created_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(case_id, task_type, due_date, safeStatus, assignee_name || caseRow.assignee_name || '', memo || '', req.user.id);
+
+  const task = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(info.lastInsertRowid);
+
+  try {
+    const googleEventId = await googleCreateEvent(caseTaskToGoogleEvent(task));
+    if (googleEventId) {
+      db.prepare('UPDATE case_tasks SET google_event_id = ? WHERE id = ?').run(googleEventId, task.id);
+      task.google_event_id = googleEventId;
+    }
+  } catch (err) { console.error('구글 캘린더 등록 실패:', err.message); }
+
+  res.status(201).json(caseTaskWithCase(task));
+});
+
+app.patch('/api/case-tasks/:id', requireLogin, async (req, res) => {
+  const task = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(req.params.id);
+  if (!task) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
+
+  const { task_type, due_date, status, assignee_name, memo } = req.body || {};
+  const updated = {
+    task_type: task_type ?? task.task_type,
+    due_date: due_date ?? task.due_date,
+    status: CASE_TASK_STATUSES.includes(status) ? status : task.status,
+    assignee_name: assignee_name ?? task.assignee_name,
+    memo: memo ?? task.memo,
+  };
+
+  db.prepare(`UPDATE case_tasks SET task_type=?, due_date=?, status=?, assignee_name=?, memo=?, updated_at=datetime('now') WHERE id = ?`)
+    .run(updated.task_type, updated.due_date, updated.status, updated.assignee_name, updated.memo, task.id);
+
+  const fresh = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(task.id);
+
+  try {
+    if (fresh.google_event_id) {
+      await googleUpdateEvent(fresh.google_event_id, caseTaskToGoogleEvent(fresh));
+    } else {
+      const googleEventId = await googleCreateEvent(caseTaskToGoogleEvent(fresh));
+      if (googleEventId) {
+        db.prepare('UPDATE case_tasks SET google_event_id = ? WHERE id = ?').run(googleEventId, fresh.id);
+        fresh.google_event_id = googleEventId;
+      }
+    }
+  } catch (err) { console.error('구글 캘린더 수정 실패:', err.message); }
+
+  res.json(caseTaskWithCase(fresh));
+});
+
+app.delete('/api/case-tasks/:id', requireLogin, async (req, res) => {
+  const task = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(req.params.id);
+  if (!task) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
+
+  db.prepare('DELETE FROM case_tasks WHERE id = ?').run(task.id);
+
+  try {
+    if (task.google_event_id) await googleDeleteEvent(task.google_event_id);
+  } catch (err) { console.error('구글 캘린더 삭제 실패:', err.message); }
+
+  res.json({ ok: true });
+});
+
 /* ---- /api/google ---- */
 
 app.get('/api/google/status', requireLogin, (req, res) => {
@@ -544,6 +740,11 @@ app.post('/api/google/disconnect', requireAdmin, (req, res) => { disconnectGoogl
 app.get('/app.html', (req, res) => {
   if (!req.session || !req.session.userId) return res.redirect('/');
   res.sendFile(path.join(__dirname, 'app.html'));
+});
+
+app.get('/cases.html', (req, res) => {
+  if (!req.session || !req.session.userId) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'cases.html'));
 });
 
 app.get('/', (req, res) => { res.sendFile(path.join(__dirname, 'index.html')); });

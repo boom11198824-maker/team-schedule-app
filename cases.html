@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>사건관리 · 팀 스케줄</title>
+<style>
+:root {
+  --surface-1:      #fcfcfb;
+  --card-surface:   #ffffff;
+  --text-primary:   #1f2430;
+  --text-secondary: #52514e;
+  --text-muted:     #898781;
+  --gridline:       #e1e0d9;
+  --border:         rgba(11,11,11,0.10);
+
+  --status-good:        #0ca30c;
+  --status-warning:     #fab219;
+  --status-serious:     #ec835a;
+  --status-critical:    #d03b3b;
+  --status-good-bg:     #e8f7e8;
+  --status-warning-bg:  #fef3dc;
+  --status-serious-bg:  #fce7de;
+  --status-critical-bg: #fbe4e4;
+  --status-muted-bg:    #eef0f4;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
+  background: #f5f6fa;
+  color: var(--text-primary);
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; background: white; border-bottom: 1px solid #e5e7eb;
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-left h1 { font-size: 18px; margin: 0; }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.user-name { font-size: 14px; color: #374151; font-weight: 600; }
+
+button.btn-secondary, a.btn-secondary {
+  background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; padding: 8px 14px;
+  border-radius: 8px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block;
+}
+button.btn-secondary:hover, a.btn-secondary:hover { background: #e5e7eb; }
+button.btn-primary {
+  background: #4f6df5; color: white; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-primary:hover { background: #3d59e0; }
+button.btn-danger {
+  background: #fee2e2; color: #b91c1c; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-danger:hover { background: #fecaca; }
+button.btn-small {
+  font-size: 12px; padding: 5px 9px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card-surface); color: var(--text-secondary);
+}
+button.btn-small:hover { background: #f3f4f6; }
+
+main { max-width: 900px; margin: 0 auto; padding: 20px; }
+
+/* ---- stat tiles ---- */
+.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
+.stat-tile {
+  background: var(--card-surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 4px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.stat-tile .label { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
+.stat-tile .value { font-size: 26px; font-weight: 700; }
+.stat-tile.crit .value { color: var(--status-critical); }
+.stat-tile.warn .value { color: #8a5a00; }
+.stat-tile.good .value { color: var(--status-good); }
+@media (max-width: 640px) { .stat-row { grid-template-columns: repeat(2, 1fr); } }
+
+/* ---- filter bar ---- */
+.filter-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+.filter-bar select, .filter-bar input[type="text"] {
+  font-family: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card-surface); color: var(--text-primary);
+}
+.filter-bar input[type="text"] { flex: 1; min-width: 140px; }
+
+/* ---- section / card list ---- */
+.section { margin-bottom: 20px; }
+.section-title {
+  display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700;
+  color: var(--text-secondary); margin: 0 0 8px 2px;
+}
+.section-title .count {
+  background: var(--status-muted-bg); color: var(--text-secondary); border-radius: 999px;
+  padding: 1px 8px; font-size: 12px; font-weight: 600;
+}
+.section.crit .section-title .count { background: var(--status-critical-bg); color: var(--status-critical); }
+.section.warn .section-title .count { background: var(--status-warning-bg); color: #8a5a00; }
+.section.good .section-title .count { background: var(--status-good-bg); color: var(--status-good); }
+
+.card-list { display: flex; flex-direction: column; gap: 6px; }
+.card {
+  background: var(--card-surface); border: 1px solid var(--border); border-left: 4px solid var(--gridline);
+  border-radius: 10px; padding: 11px 14px; display: flex; align-items: center; gap: 12px; cursor: pointer;
+}
+.card:hover { border-color: #c7cbe0; }
+.card.crit { border-left-color: var(--status-critical); }
+.card.warn { border-left-color: var(--status-warning); }
+.card.good { border-left-color: var(--status-good); opacity: 0.75; }
+.card.muted { border-left-color: var(--gridline); }
+
+.card .badge {
+  flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+}
+.card.crit .badge { background: var(--status-critical-bg); color: var(--status-critical); }
+.card.warn .badge { background: var(--status-warning-bg); color: #8a5a00; }
+.card.good .badge { background: var(--status-good-bg); color: var(--status-good); }
+.card.muted .badge { background: var(--status-muted-bg); color: var(--text-secondary); }
+
+.card .body { flex: 1; min-width: 0; }
+.card .title { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+.card.good .title { text-decoration: line-through; color: var(--text-secondary); }
+.card .meta { font-size: 12px; color: var(--text-secondary); }
+.card .meta b { color: var(--text-primary); font-weight: 600; }
+.card .due { flex-shrink: 0; font-size: 12px; color: var(--text-muted); text-align: right; min-width: 78px; }
+.card .actions { flex-shrink: 0; }
+
+.empty-note { font-size: 13px; color: var(--text-muted); padding: 20px 4px; text-align: center; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--text-secondary); margin: 4px 2px 24px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+
+.fab {
+  position: fixed; right: 28px; bottom: 28px; padding: 14px 22px; border-radius: 999px;
+  background: #4f6df5; color: white; border: none; font-size: 15px; font-weight: 600;
+  box-shadow: 0 6px 20px rgba(79,109,245,0.4); cursor: pointer;
+}
+.fab:hover { background: #3d59e0; }
+
+/* ---- modal (shared pattern) ---- */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex;
+  align-items: center; justify-content: center; z-index: 100;
+}
+.modal-backdrop.hidden { display: none; }
+.modal {
+  background: white; border-radius: 14px; padding: 28px; width: 520px; max-width: 92vw;
+  max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+}
+.modal h2 { margin-top: 0; font-size: 18px; }
+.modal h3 { font-size: 14px; margin: 18px 0 8px; color: var(--text-secondary); }
+.modal label { display: block; font-size: 13px; margin: 12px 0 4px; color: #374151; }
+.modal input, .modal textarea, .modal select {
+  width: 100%; padding: 9px 11px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;
+  font-family: inherit; background: white;
+}
+.modal .row { display: flex; gap: 12px; }
+.modal .row > div { flex: 1; }
+.checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.checkbox-row input { width: auto; }
+.modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 20px; }
+.spacer { flex: 1; }
+.hidden { display: none !important; }
+.error-text { color: #b91c1c; font-size: 13px; margin: 6px 0 0; min-height: 0; }
+
+.task-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+.task-table th, .task-table td { text-align: left; padding: 7px 5px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+.task-table td.actions-cell { white-space: nowrap; text-align: right; }
+.status-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.status-pill.예정 { background: var(--status-muted-bg); color: var(--text-secondary); }
+.status-pill.진행중 { background: var(--status-warning-bg); color: #8a5a00; }
+.status-pill.완료 { background: var(--status-good-bg); color: var(--status-good); }
+
+.mini-form { background: #f9fafb; border: 1px solid #eee; border-radius: 10px; padding: 12px; margin-top: 10px; }
+.mini-form-title { font-size: 12px; font-weight: 700; color: var(--text-secondary); margin-bottom: 6px; }
+
+@media (max-width: 640px) {
+  .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .topbar-left h1 { font-size: 16px; }
+  .topbar-right { gap: 6px; }
+  .topbar-right .user-name { display: none; }
+  button.btn-secondary, a.btn-secondary { padding: 7px 10px; font-size: 12px; }
+  main { padding: 12px; }
+  .fab {
+    position: static; display: block; width: calc(100% - 24px);
+    margin: 14px 12px 20px; border-radius: 10px; box-shadow: none;
+    padding: 14px; font-size: 15px; text-align: center;
+  }
+  .modal { padding: 20px; width: 100%; border-radius: 14px 14px 0 0; overflow-x: auto; }
+  .modal-backdrop { align-items: flex-end; }
+  .modal .row { flex-direction: column; gap: 0; }
+  .modal-actions { flex-wrap: wrap; }
+  .modal-actions button { flex: 1 1 auto; }
+  .task-table { font-size: 12px; min-width: 420px; }
+}
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1>⚖️ 사건관리</h1>
+    </div>
+    <div class="topbar-right">
+      <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
+      <span id="user-name" class="user-name"></span>
+      <button id="btn-logout" class="btn-secondary">로그아웃</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="stat-row">
+      <div class="stat-tile crit">
+        <div class="label">🔴 오늘 마감</div>
+        <div class="value" id="stat-today">0</div>
+      </div>
+      <div class="stat-tile crit">
+        <div class="label">⛔ 기한초과</div>
+        <div class="value" id="stat-overdue">0</div>
+      </div>
+      <div class="stat-tile warn">
+        <div class="label">🟡 임박 (D-1~D-3)</div>
+        <div class="value" id="stat-upcoming">0</div>
+      </div>
+      <div class="stat-tile good">
+        <div class="label">✅ 완료</div>
+        <div class="value" id="stat-done">0</div>
+      </div>
+    </div>
+
+    <div class="filter-bar">
+      <select id="filter-status">
+        <option value="all">전체 상태</option>
+        <option value="예정">예정만</option>
+        <option value="진행중">진행중만</option>
+        <option value="완료">완료만</option>
+      </select>
+      <select id="filter-assignee">
+        <option value="all">전체 담당자</option>
+      </select>
+      <input type="text" id="filter-search" placeholder="의뢰인명 / 사건번호 검색" />
+    </div>
+
+    <div id="sections"></div>
+
+    <div class="legend">
+      <span>🔴 <span style="color:var(--status-critical)">오늘마감·기한초과</span></span>
+      <span>🟡 <span style="color:#8a5a00">임박 D-1~D-3</span></span>
+      <span>🔵 여유 (D-4 이상)</span>
+      <span>✅ <span style="color:var(--status-good)">완료</span></span>
+    </div>
+  </main>
+
+  <button id="btn-new-case" class="fab">+ 사건 추가</button>
+
+  <!-- 사건 상세/편집 모달 -->
+  <div id="case-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2 id="case-modal-title">사건 추가</h2>
+      <form id="case-form">
+        <input type="hidden" id="case-id" />
+        <label>의뢰인명 *</label>
+        <input type="text" id="case-client" required />
+
+        <div class="row">
+          <div>
+            <label>연락처</label>
+            <input type="text" id="case-phone" placeholder="010-0000-0000" />
+          </div>
+          <div>
+            <label>담당자</label>
+            <input type="text" id="case-assignee" placeholder="예: 진홍" />
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label>관할법원</label>
+            <input type="text" id="case-court" placeholder="예: 수원회생법원" />
+          </div>
+          <div>
+            <label>사건번호</label>
+            <input type="text" id="case-caseno" placeholder="예: 2026개회12345" />
+          </div>
+        </div>
+
+        <label>메모</label>
+        <textarea id="case-memo" rows="2"></textarea>
+
+        <p id="case-error" class="error-text"></p>
+
+        <div class="modal-actions">
+          <button type="button" id="btn-delete-case" class="btn-danger hidden">사건 삭제</button>
+          <div class="spacer"></div>
+          <button type="button" class="btn-secondary" id="btn-cancel-case">닫기</button>
+          <button type="submit" class="btn-primary" id="btn-save-case">저장</button>
+        </div>
+      </form>
+
+      <div id="task-section" class="hidden">
+        <h3>서류·보정 일정</h3>
+        <table class="task-table">
+          <thead><tr><th>업무구분</th><th>마감예정일</th><th>상태</th><th></th></tr></thead>
+          <tbody id="task-tbody"></tbody>
+        </table>
+        <p id="task-empty-note" class="empty-note hidden" style="padding:8px 0;">등록된 일정이 없습니다.</p>
+
+        <div class="mini-form">
+          <div class="mini-form-title" id="task-form-title">새 일정 추가</div>
+          <form id="task-form">
+            <input type="hidden" id="task-id" />
+            <div class="row">
+              <div>
+                <label>업무구분 *</label>
+                <input type="text" id="task-type" list="task-type-options" required placeholder="예: 보정서 제출" />
+                <datalist id="task-type-options">
+                  <option value="보정서 제출"></option>
+                  <option value="심문기일 출석"></option>
+                  <option value="서류 송달"></option>
+                  <option value="채권자 목록 보정"></option>
+                  <option value="변제계획안 제출"></option>
+                  <option value="보정명령 회신"></option>
+                  <option value="인가결정문 수령"></option>
+                </datalist>
+              </div>
+              <div>
+                <label>마감예정일 *</label>
+                <input type="date" id="task-due" required />
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label>상태</label>
+                <select id="task-status">
+                  <option value="예정">예정</option>
+                  <option value="진행중">진행중</option>
+                  <option value="완료">완료</option>
+                </select>
+              </div>
+              <div>
+                <label>담당자</label>
+                <input type="text" id="task-assignee" />
+              </div>
+            </div>
+            <label>메모</label>
+            <input type="text" id="task-memo" />
+            <p id="task-error" class="error-text"></p>
+            <div class="modal-actions">
+              <button type="button" id="btn-delete-task" class="btn-danger hidden">삭제</button>
+              <div class="spacer"></div>
+              <button type="button" class="btn-secondary hidden" id="btn-cancel-task">취소</button>
+              <button type="submit" class="btn-primary" id="btn-save-task">추가</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+let currentUser = null;
+let allCases = [];
+let allTasks = [];
+let openCaseId = null; // 현재 모달에서 편집 중인 case id
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = '/'; throw new Error('로그인이 필요합니다.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
+  return data;
+}
+
+function escapeHTML(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+/* ---- D-day / 분류 ---- */
+function computeDDay(dateStr) {
+  const due = new Date(dateStr + 'T00:00:00+09:00');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((due - today) / 86400000);
+}
+
+function classify(task) {
+  if (task.status === '완료') return 'good';
+  if (task.dDay < 0) return 'crit';
+  if (task.dDay === 0) return 'crit';
+  if (task.dDay >= 1 && task.dDay <= 3) return 'warn';
+  return 'muted';
+}
+
+/* ---- 대시보드 렌더링 ---- */
+function applyFilters(rows) {
+  const status = document.getElementById('filter-status').value;
+  const assignee = document.getElementById('filter-assignee').value;
+  const q = document.getElementById('filter-search').value.trim().toLowerCase();
+  return rows.filter((r) => {
+    if (status !== 'all' && r.status !== status) return false;
+    if (assignee !== 'all' && r.assignee_name !== assignee) return false;
+    if (q && !(`${r.client_name} ${r.court_case_no}`.toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function cardHTML(t) {
+  const cls = classify(t);
+  let badgeText;
+  if (t.status === '완료') badgeText = '완료';
+  else if (t.dDay < 0) badgeText = `D+${Math.abs(t.dDay)} 초과`;
+  else if (t.dDay === 0) badgeText = 'D-DAY';
+  else badgeText = `D-${t.dDay}`;
+
+  const icon = t.status === '완료' ? '✅' : (t.status === '예정' && t.dDay < 0) ? '⛔' : (t.status === '예정' && t.dDay === 0) ? '🔴' : (t.status !== '완료' && t.dDay <= 3) ? '🟡' : '🔵';
+
+  return `
+    <div class="card ${cls}" data-case-id="${t.case_id}">
+      <span class="badge">${badgeText}</span>
+      <div class="body">
+        <p class="title">${icon} ${escapeHTML(t.client_name)} · ${escapeHTML(t.task_type)}</p>
+        <p class="meta">담당: <b>${escapeHTML(t.assignee_name || '-')}</b> · ${escapeHTML(t.court || '')} ${escapeHTML(t.court_case_no || '')}</p>
+      </div>
+      <div class="due">${t.due_date}</div>
+      ${t.status !== '완료' ? `<div class="actions"><button type="button" class="btn-small" data-quick-complete="${t.id}">완료 처리</button></div>` : ''}
+    </div>`;
+}
+
+function sectionHTML(title, cls, rows) {
+  if (!rows.length) return '';
+  return `
+    <div class="section ${cls}">
+      <p class="section-title">${title} <span class="count">${rows.length}건</span></p>
+      <div class="card-list">${rows.map(cardHTML).join('')}</div>
+    </div>`;
+}
+
+function render() {
+  const withDday = allTasks.map((t) => Object.assign({}, t, { dDay: computeDDay(t.due_date) }));
+  const filtered = applyFilters(withDday);
+
+  const overdue = filtered.filter((t) => t.status !== '완료' && t.dDay < 0).sort((a,b)=>a.dDay-b.dDay);
+  const today = filtered.filter((t) => t.status !== '완료' && t.dDay === 0);
+  const upcoming = filtered.filter((t) => t.status !== '완료' && t.dDay >= 1 && t.dDay <= 3).sort((a,b)=>a.dDay-b.dDay);
+  const later = filtered.filter((t) => t.status !== '완료' && t.dDay > 3).sort((a,b)=>a.dDay-b.dDay);
+  const done = filtered.filter((t) => t.status === '완료').sort((a,b)=>b.due_date.localeCompare(a.due_date));
+
+  document.getElementById('stat-today').textContent = withDday.filter(t=>t.status!=='완료'&&t.dDay===0).length;
+  document.getElementById('stat-overdue').textContent = withDday.filter(t=>t.status!=='완료'&&t.dDay<0).length;
+  document.getElementById('stat-upcoming').textContent = withDday.filter(t=>t.status!=='완료'&&t.dDay>=1&&t.dDay<=3).length;
+  document.getElementById('stat-done').textContent = withDday.filter(t=>t.status==='완료').length;
+
+  const html = [
+    sectionHTML('⛔ 기한초과', 'crit', overdue),
+    sectionHTML('🔴 오늘 마감', 'crit', today),
+    sectionHTML('🟡 임박 (D-1~D-3)', 'warn', upcoming),
+    sectionHTML('🔵 여유 (D-4 이상)', '', later),
+    sectionHTML('✅ 완료', 'good', done),
+  ].join('');
+
+  document.getElementById('sections').innerHTML = html ||
+    '<p class="empty-note">조건에 맞는 사건 일정이 없습니다. 오른쪽 아래 + 버튼으로 사건을 추가해보세요.</p>';
+
+  document.querySelectorAll('[data-quick-complete]').forEach((btn) => {
+    btn.addEventListener('click', (e) => { e.stopPropagation(); quickComplete(btn.dataset.quickComplete); });
+  });
+  document.querySelectorAll('.card').forEach((card) => {
+    card.addEventListener('click', () => openCaseModal(Number(card.dataset.caseId)));
+  });
+}
+
+function populateAssigneeFilter() {
+  const select = document.getElementById('filter-assignee');
+  const current = select.value;
+  const names = Array.from(new Set(allTasks.map((t) => t.assignee_name).filter(Boolean)));
+  select.innerHTML = '<option value="all">전체 담당자</option>' +
+    names.map((n) => `<option value="${escapeHTML(n)}">${escapeHTML(n)}</option>`).join('');
+  select.value = current && names.includes(current) ? current : 'all';
+}
+
+async function quickComplete(taskId) {
+  await api(`/api/case-tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ status: '완료' }) });
+  await loadAll();
+}
+
+async function loadAll() {
+  [allCases, allTasks] = await Promise.all([api('/api/cases'), api('/api/case-tasks')]);
+  populateAssigneeFilter();
+  render();
+}
+
+/* ---- 사건 모달 ---- */
+function resetTaskForm() {
+  document.getElementById('task-form').reset();
+  document.getElementById('task-id').value = '';
+  document.getElementById('task-status').value = '예정';
+  document.getElementById('task-form-title').textContent = '새 일정 추가';
+  document.getElementById('btn-save-task').textContent = '추가';
+  document.getElementById('btn-delete-task').classList.add('hidden');
+  document.getElementById('btn-cancel-task').classList.add('hidden');
+  document.getElementById('task-error').textContent = '';
+}
+
+async function openCaseModal(caseId) {
+  document.getElementById('case-error').textContent = '';
+  document.getElementById('case-form').reset();
+  resetTaskForm();
+
+  if (caseId) {
+    const c = allCases.find((x) => x.id === caseId) || await api(`/api/cases`).then(list => list.find(x => x.id === caseId));
+    openCaseId = caseId;
+    document.getElementById('case-modal-title').textContent = '사건 상세';
+    document.getElementById('case-id').value = c.id;
+    document.getElementById('case-client').value = c.client_name || '';
+    document.getElementById('case-phone').value = c.phone || '';
+    document.getElementById('case-assignee').value = c.assignee_name || '';
+    document.getElementById('case-court').value = c.court || '';
+    document.getElementById('case-caseno').value = c.court_case_no || '';
+    document.getElementById('case-memo').value = c.memo || '';
+    document.getElementById('task-assignee').value = c.assignee_name || '';
+    document.getElementById('btn-delete-case').classList.remove('hidden');
+    document.getElementById('btn-save-case').textContent = '저장';
+    document.getElementById('task-section').classList.remove('hidden');
+    await renderTaskTable(caseId);
+  } else {
+    openCaseId = null;
+    document.getElementById('case-modal-title').textContent = '사건 추가';
+    document.getElementById('case-id').value = '';
+    document.getElementById('btn-delete-case').classList.add('hidden');
+    document.getElementById('btn-save-case').textContent = '사건 저장 후 계속';
+    document.getElementById('task-section').classList.add('hidden');
+  }
+
+  document.getElementById('case-modal').classList.remove('hidden');
+}
+
+function closeCaseModal() {
+  document.getElementById('case-modal').classList.add('hidden');
+  openCaseId = null;
+}
+
+async function renderTaskTable(caseId) {
+  const tasks = await api(`/api/case-tasks?caseId=${caseId}`);
+  const tbody = document.getElementById('task-tbody');
+  const emptyNote = document.getElementById('task-empty-note');
+  if (!tasks.length) {
+    tbody.innerHTML = '';
+    emptyNote.classList.remove('hidden');
+  } else {
+    emptyNote.classList.add('hidden');
+    tbody.innerHTML = tasks
+      .sort((a, b) => a.due_date.localeCompare(b.due_date))
+      .map((t) => `
+        <tr>
+          <td>${escapeHTML(t.task_type)}</td>
+          <td>${t.due_date}</td>
+          <td><span class="status-pill ${t.status}">${t.status}</span></td>
+          <td class="actions-cell">
+            <button type="button" class="btn-small" data-edit-task="${t.id}">편집</button>
+          </td>
+        </tr>`).join('');
+    tbody.querySelectorAll('[data-edit-task]').forEach((btn) => {
+      btn.addEventListener('click', () => loadTaskIntoForm(tasks.find((t) => t.id === Number(btn.dataset.editTask))));
+    });
+  }
+}
+
+function loadTaskIntoForm(task) {
+  document.getElementById('task-id').value = task.id;
+  document.getElementById('task-type').value = task.task_type;
+  document.getElementById('task-due').value = task.due_date;
+  document.getElementById('task-status').value = task.status;
+  document.getElementById('task-assignee').value = task.assignee_name || '';
+  document.getElementById('task-memo').value = task.memo || '';
+  document.getElementById('task-form-title').textContent = '일정 편집';
+  document.getElementById('btn-save-task').textContent = '수정 저장';
+  document.getElementById('btn-delete-task').classList.remove('hidden');
+  document.getElementById('btn-cancel-task').classList.remove('hidden');
+  document.getElementById('task-error').textContent = '';
+}
+
+document.getElementById('case-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById('case-error');
+  errorEl.textContent = '';
+  const payload = {
+    client_name: document.getElementById('case-client').value.trim(),
+    phone: document.getElementById('case-phone').value.trim(),
+    assignee_name: document.getElementById('case-assignee').value.trim(),
+    court: document.getElementById('case-court').value.trim(),
+    court_case_no: document.getElementById('case-caseno').value.trim(),
+    memo: document.getElementById('case-memo').value.trim(),
+  };
+  try {
+    if (openCaseId) {
+      await api(`/api/cases/${openCaseId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      await loadAll();
+      closeCaseModal();
+    } else {
+      const created = await api('/api/cases', { method: 'POST', body: JSON.stringify(payload) });
+      await loadAll();
+      openCaseModal(created.id);
+    }
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+document.getElementById('btn-delete-case').addEventListener('click', async () => {
+  if (!openCaseId) return;
+  if (!confirm('이 사건과 관련된 모든 일정을 삭제할까요? (구글 캘린더에 등록된 일정도 함께 삭제됩니다)')) return;
+  await api(`/api/cases/${openCaseId}`, { method: 'DELETE' });
+  await loadAll();
+  closeCaseModal();
+});
+
+document.getElementById('task-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById('task-error');
+  errorEl.textContent = '';
+  const taskId = document.getElementById('task-id').value;
+  const payload = {
+    case_id: openCaseId,
+    task_type: document.getElementById('task-type').value.trim(),
+    due_date: document.getElementById('task-due').value,
+    status: document.getElementById('task-status').value,
+    assignee_name: document.getElementById('task-assignee').value.trim(),
+    memo: document.getElementById('task-memo').value.trim(),
+  };
+  try {
+    if (taskId) {
+      await api(`/api/case-tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    } else {
+      await api('/api/case-tasks', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    resetTaskForm();
+    await renderTaskTable(openCaseId);
+    await loadAll();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+document.getElementById('btn-delete-task').addEventListener('click', async () => {
+  const taskId = document.getElementById('task-id').value;
+  if (!taskId) return;
+  if (!confirm('이 일정을 삭제할까요?')) return;
+  await api(`/api/case-tasks/${taskId}`, { method: 'DELETE' });
+  resetTaskForm();
+  await renderTaskTable(openCaseId);
+  await loadAll();
+});
+
+document.getElementById('btn-cancel-task').addEventListener('click', resetTaskForm);
+document.getElementById('btn-new-case').addEventListener('click', () => openCaseModal(null));
+document.getElementById('btn-cancel-case').addEventListener('click', closeCaseModal);
+
+document.getElementById('filter-status').addEventListener('change', render);
+document.getElementById('filter-assignee').addEventListener('change', render);
+document.getElementById('filter-search').addEventListener('input', render);
+
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  await api('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/';
+});
+
+async function init() {
+  try {
+    currentUser = await api('/api/auth/me');
+  } catch {
+    window.location.href = '/';
+    return;
+  }
+  document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+  await loadAll();
+}
+
+init();
+</script>
+</body>
+</html>

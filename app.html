@@ -79,6 +79,16 @@ button.btn-danger:hover { background: #fecaca; }
   width: 100%; padding: 9px 11px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;
   font-family: inherit; background: white;
 }
+.detail-modal { width: 380px; }
+.detail-header { margin-bottom: 4px; }
+.detail-badge {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700;
+  padding: 4px 10px; border-radius: 999px; color: white;
+}
+.detail-title { font-size: 19px; margin: 8px 0 18px; word-break: break-word; }
+.detail-rows { display: flex; flex-direction: column; gap: 14px; }
+.detail-row { display: flex; align-items: flex-start; gap: 12px; font-size: 14px; color: #1f2430; line-height: 1.5; }
+.detail-icon { flex-shrink: 0; font-size: 16px; width: 20px; text-align: center; }
 .legend { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 20px 10px; font-size: 12px; color: #6b7280; }
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
@@ -151,6 +161,39 @@ button.btn-danger:hover { background: #fecaca; }
   </main>
 
   <button id="btn-new-schedule" class="fab">+ 일정 추가</button>
+
+  <div id="detail-modal" class="modal-backdrop hidden">
+    <div class="modal detail-modal">
+      <div class="detail-header">
+        <span id="detail-category-badge" class="detail-badge"></span>
+      </div>
+      <h2 id="detail-title" class="detail-title"></h2>
+      <div class="detail-rows">
+        <div class="detail-row">
+          <span class="detail-icon">🕒</span>
+          <span id="detail-time"></span>
+        </div>
+        <div class="detail-row" id="detail-assignee-row">
+          <span class="detail-icon">👤</span>
+          <span id="detail-assignee"></span>
+        </div>
+        <div class="detail-row hidden" id="detail-location-row">
+          <span class="detail-icon">📍</span>
+          <span id="detail-location"></span>
+        </div>
+        <div class="detail-row hidden" id="detail-desc-row">
+          <span class="detail-icon">📝</span>
+          <span id="detail-desc"></span>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="btn-detail-delete" class="btn-danger hidden">삭제</button>
+        <div class="spacer"></div>
+        <button type="button" class="btn-secondary" id="btn-detail-close">닫기</button>
+        <button type="button" class="btn-primary hidden" id="btn-detail-edit">✏️ 수정</button>
+      </div>
+    </div>
+  </div>
 
   <div id="schedule-modal" class="modal-backdrop hidden">
     <div class="modal">
@@ -304,11 +347,15 @@ async function init() {
 
 function setupCalendar() {
   const el = document.getElementById('calendar');
+  const isMobile = window.innerWidth < 768;
   calendar = new FullCalendar.Calendar(el, {
     locale: 'ko',
     height: 'auto',
-    headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,listWeek' },
-    initialView: 'dayGridMonth',
+    headerToolbar: isMobile
+      ? { left: 'prev,next today', center: 'title', right: 'listWeek,dayGridMonth' }
+      : { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,listWeek' },
+    initialView: isMobile ? 'listWeek' : 'dayGridMonth',
+    dayMaxEvents: true,
     selectable: true,
     events: async (info, success, failure) => {
       try {
@@ -330,7 +377,7 @@ function setupCalendar() {
       } catch (err) { failure(err); }
     },
     select: (info) => openScheduleModal({ start: info.start, end: info.end, allDay: info.allDay }),
-    eventClick: (info) => openScheduleModal({ existing: info.event.extendedProps }),
+    eventClick: (info) => openDetailModal(info.event.extendedProps),
   });
   calendar.render();
 }
@@ -426,6 +473,110 @@ document.getElementById('btn-delete-schedule').addEventListener('click', async (
     calendar.refetchEvents();
   } catch (err) {
     document.getElementById('schedule-error').textContent = err.message;
+  }
+});
+
+/* ---- 일정 상세보기 (구글 캘린더 스타일: 탭하면 먼저 미리보기, 수정은 별도 버튼) ---- */
+
+const detailModal = document.getElementById('detail-modal');
+let detailExisting = null;
+
+const WEEKDAY_KO = ['일', '월', '화', '수', '목', '금', '토'];
+
+// 한국은 DST가 없으므로 UTC+9 로 고정 계산 (기기의 로컬 타임존 설정과 무관하게 항상 정확한 한국 시간 표시)
+function toSeoulParts(d) {
+  const s = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  return {
+    year: s.getUTCFullYear(), month: s.getUTCMonth() + 1, day: s.getUTCDate(),
+    weekday: s.getUTCDay(), hour: s.getUTCHours(), minute: s.getUTCMinutes(),
+  };
+}
+function formatDetailDate(d) {
+  const p = toSeoulParts(d);
+  return `${p.year}년 ${p.month}월 ${p.day}일 (${WEEKDAY_KO[p.weekday]})`;
+}
+function formatDetailTime(d) {
+  const p = toSeoulParts(d);
+  const period = p.hour < 12 ? '오전' : '오후';
+  const h12 = p.hour % 12 === 0 ? 12 : p.hour % 12;
+  return `${period} ${h12}:${String(p.minute).padStart(2, '0')}`;
+}
+function isSameDay(a, b) {
+  const pa = toSeoulParts(a);
+  const pb = toSeoulParts(b);
+  return pa.year === pb.year && pa.month === pb.month && pa.day === pb.day;
+}
+
+function formatDetailDateTime(existing) {
+  const start = new Date(existing.start_at);
+  const end = new Date(existing.end_at);
+  if (existing.all_day) {
+    return isSameDay(start, end)
+      ? `${formatDetailDate(start)} · 하루 종일`
+      : `${formatDetailDate(start)} ~ ${formatDetailDate(end)} · 하루 종일`;
+  }
+  return isSameDay(start, end)
+    ? `${formatDetailDate(start)} ${formatDetailTime(start)} – ${formatDetailTime(end)}`
+    : `${formatDetailDate(start)} ${formatDetailTime(start)} ~ ${formatDetailDate(end)} ${formatDetailTime(end)}`;
+}
+
+function openDetailModal(existing) {
+  detailExisting = existing;
+  const meta = CATEGORY_META[existing.category] || CATEGORY_META['업무'];
+
+  const badge = document.getElementById('detail-category-badge');
+  badge.textContent = `${meta.icon} ${existing.category || '업무'}`;
+  badge.style.background = meta.color;
+
+  document.getElementById('detail-title').textContent = existing.title;
+  document.getElementById('detail-time').textContent = formatDetailDateTime(existing);
+
+  const assigneeRow = document.getElementById('detail-assignee-row');
+  if (existing.assignee_name) {
+    assigneeRow.classList.remove('hidden');
+    document.getElementById('detail-assignee').textContent = existing.assignee_name;
+  } else {
+    assigneeRow.classList.add('hidden');
+  }
+
+  const locationRow = document.getElementById('detail-location-row');
+  if (existing.location) {
+    locationRow.classList.remove('hidden');
+    document.getElementById('detail-location').textContent = existing.location;
+  } else {
+    locationRow.classList.add('hidden');
+  }
+
+  const descRow = document.getElementById('detail-desc-row');
+  if (existing.description) {
+    descRow.classList.remove('hidden');
+    document.getElementById('detail-desc').textContent = existing.description;
+  } else {
+    descRow.classList.add('hidden');
+  }
+
+  const canModify = currentUser.role === 'admin' || existing.created_by === currentUser.id;
+  document.getElementById('btn-detail-edit').classList.toggle('hidden', !canModify);
+  document.getElementById('btn-detail-delete').classList.toggle('hidden', !canModify);
+
+  detailModal.classList.remove('hidden');
+}
+
+document.getElementById('btn-detail-close').addEventListener('click', () => detailModal.classList.add('hidden'));
+
+document.getElementById('btn-detail-edit').addEventListener('click', () => {
+  detailModal.classList.add('hidden');
+  openScheduleModal({ existing: detailExisting });
+});
+
+document.getElementById('btn-detail-delete').addEventListener('click', async () => {
+  if (!detailExisting || !confirm('이 일정을 삭제할까요? 구글 캘린더에서도 함께 삭제됩니다.')) return;
+  try {
+    await api(`/api/schedules/${detailExisting.id}`, { method: 'DELETE' });
+    detailModal.classList.add('hidden');
+    calendar.refetchEvents();
+  } catch (err) {
+    alert(err.message);
   }
 });
 

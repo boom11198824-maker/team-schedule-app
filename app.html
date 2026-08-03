@@ -332,6 +332,7 @@ function openScheduleModal({ start, end, allDay, existing } = {}) {
     const e = end && end.getTime() !== s.getTime() ? end : new Date(s.getTime() + 60 * 60 * 1000);
     document.getElementById('sch-start').value = toLocalInputValue(s);
     document.getElementById('sch-end').value = toLocalInputValue(e);
+    document.getElementById('sch-assignee').value = currentUser.name;
     Array.from(form.elements).forEach((el) => (el.disabled = false));
   }
   scheduleModal.classList.remove('hidden');

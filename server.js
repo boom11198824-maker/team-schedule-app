@@ -1245,7 +1245,14 @@ app.post('/api/admin/clients-sheet', requireAdmin, async (req, res) => {
     res.json({ ok: true, clientCount, tab: tabName, tasksTabCreated: !hasTasksTab });
   } catch (err) {
     if (err.code === 'NOT_CONNECTED') return res.status(400).json({ error: err.message, code: err.code });
-    if (err.code === 403 || /insufficient|permission/i.test(err.message || '')) {
+    // 기존에 연동된 계정이 (구)캘린더 권한만 갖고 있어 시트 권한 자체가 없는 경우 (공유 문제와는 다름)
+    if (/insufficient.*scope|insufficient authentication scopes/i.test(err.message || '')) {
+      return res.status(403).json({
+        error: '구글 계정에 스프레드시트 권한이 없습니다. "구글 캘린더 연동"에서 "다시 연결하기"를 눌러 재연동해주세요 (시트 권한이 추가되었습니다).',
+        code: 'NEEDS_RECONSENT',
+      });
+    }
+    if (err.code === 403 || /permission/i.test(err.message || '')) {
       return res.status(403).json({
         error: '이 스프레드시트에 대한 접근 권한이 없습니다. 구글 캘린더 연동에 사용 중인 계정과 이 시트를 공유(편집자 권한)해주세요.',
         code: 'NO_ACCESS',

@@ -1293,7 +1293,9 @@ function attachClientDocs(c) {
 app.get('/api/clients', requireLogin, async (req, res) => {
   try {
     const clients = await readClientsFromExternalSheet();
-    res.json((clients || []).map(attachClientDocs));
+    // 화면에는 시트 역순(최근에 추가된 의뢰인이 위로 오도록)으로 보여준다.
+    // _sortKey(원본 시트 행 순서)는 그대로 유지되므로 사건 매칭 로직에는 영향이 없다.
+    res.json((clients || []).slice().reverse().map(attachClientDocs));
   } catch (err) {
     console.error('의뢰인 목록 읽기 실패:', err.message);
     res.status(500).json({ error: '의뢰인 목록을 불러오지 못했습니다: ' + err.message });
@@ -1336,6 +1338,25 @@ app.post('/api/clients/documents', requireLogin, (req, res) => {
     cert_usb_received: !!certReceived,
     cert_usb_received_date: certReceived ? (cert_usb_received_date || '') : '',
   });
+});
+
+// 의뢰인 목록(외부 구글시트)에서 "사건상세 페이지 열기"를 눌렀을 때 쓴다.
+// 같은 의뢰인의 사건(cases)이 이미 있으면 그 사건으로, 없으면 시트에 있는 정보
+// (이름/연락처/법원/사건번호)로 새 사건을 자동 생성해서 사건상세 페이지로 보낸다.
+// OSMU 원칙: 의뢰인 시트에 이미 입력된 정보를 사건관리 화면에서 다시 입력하지 않는다.
+app.post('/api/clients/open-case', requireLogin, (req, res) => {
+  const { client_name, phone, court, court_case_no } = req.body || {};
+  if (!client_name) return res.status(400).json({ error: '의뢰인명이 필요합니다.' });
+
+  const cases = db.prepare('SELECT * FROM cases').all().map((c) => Object.assign({ _sortKey: c.id }, c));
+  const matched = matchCaseByNameAndCaseNo(cases, client_name, court_case_no);
+  if (matched) return res.json({ id: matched.id, created: false });
+
+  const info = db
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, created_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(client_name, phone || '', court || '', court_case_no || '', '', '', '', '', '', '', req.user.id);
+  res.status(201).json({ id: info.lastInsertRowid, created: true });
 });
 
 // addSchedule() 역할: 선택한 의뢰인 정보 + 할 일 + 마감일을 [일정_보정관리] 탭 맨 아래에 추가한다.

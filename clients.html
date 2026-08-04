@@ -236,10 +236,12 @@ table.client-table td.muted { color: var(--text-muted); }
       </table>
       <p id="ci-task-empty" class="empty-note hidden" style="padding:6px 0;">관련 일정이 없습니다.</p>
 
+      <p id="ci-open-case-error" class="error-text"></p>
       <div class="modal-actions">
         <div class="spacer"></div>
         <button type="button" class="btn-secondary" id="btn-close-client-info">닫기</button>
         <button type="button" class="btn-secondary" id="btn-add-schedule-for-client">+ 일정 추가</button>
+        <button type="button" class="btn-secondary" id="btn-open-case-detail">사건상세 페이지 열기 →</button>
         <button type="button" class="btn-primary" id="btn-save-client-docs">저장</button>
       </div>
     </div>
@@ -395,6 +397,29 @@ function openClientInfoModal(c) {
       caseno: c.court_case_no || '',
     });
     window.location.href = '/cases.html?' + params.toString();
+  };
+
+  const openCaseErrorEl = document.getElementById('ci-open-case-error');
+  openCaseErrorEl.textContent = '';
+  document.getElementById('btn-open-case-detail').onclick = async () => {
+    openCaseErrorEl.textContent = '';
+    const btn = document.getElementById('btn-open-case-detail');
+    btn.disabled = true;
+    try {
+      const result = await api('/api/clients/open-case', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_name: c.client_name || '',
+          phone: c.phone || '',
+          court: c.court || '',
+          court_case_no: c.court_case_no || '',
+        }),
+      });
+      window.location.href = `/case-detail.html?id=${result.id}`;
+    } catch (err) {
+      openCaseErrorEl.textContent = err.message;
+      btn.disabled = false;
+    }
   };
 }
 document.getElementById('btn-close-client-info').addEventListener('click', () => {

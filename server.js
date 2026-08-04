@@ -262,6 +262,7 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/userinfo.email',
 ];
 
 function getOAuthClient() {
@@ -1371,11 +1372,17 @@ app.get('/api/google/whoami', requireAdmin, async (req, res) => {
   if (!isGoogleConnected()) return res.status(400).json({ error: '구글 계정이 연동되어 있지 않습니다.' });
   try {
     const client = await getAuthorizedGoogleClient();
-    const drive = google.drive({ version: 'v3', auth: client });
-    const about = await drive.about.get({ fields: 'user(displayName,emailAddress)' });
-    res.json({ email: about.data.user ? about.data.user.emailAddress : null, displayName: about.data.user ? about.data.user.displayName : null });
+    const oauth2 = google.oauth2({ version: 'v2', auth: client });
+    const info = await oauth2.userinfo.get();
+    res.json({ email: info.data.email || null, displayName: info.data.name || null });
   } catch (err) {
     console.error('구글 계정 조회 실패:', err.message);
+    if (/insufficient|scope/i.test(err.message || '')) {
+      return res.status(409).json({
+        error: '이 기능을 사용하려면 구글 계정을 다시 연동해주세요 (팀 스케줄 화면 > 구글 캘린더 연동 해제 후 재연동).',
+        code: 'NEEDS_RECONNECT',
+      });
+    }
     res.status(500).json({ error: '연동된 구글 계정 정보를 가져오지 못했습니다: ' + err.message });
   }
 });

@@ -1018,9 +1018,13 @@ document.getElementById('btn-clients-sheet').addEventListener('click', async () 
       ? `⚠ 이 구글 계정(${who.email})에 시트를 "편집자"로 공유해야 연결됩니다.`
       : '';
   } catch (e) {
-    hintEl.textContent = e.message && e.message.includes('연동되어 있지 않')
-      ? '⚠ 먼저 "구글 캘린더 연동"을 완료해주세요 (팀 스케줄 화면).'
-      : '';
+    if (e.message && e.message.includes('연동되어 있지 않')) {
+      hintEl.textContent = '⚠ 먼저 "구글 캘린더 연동"을 완료해주세요 (팀 스케줄 화면).';
+    } else if (e.message && e.message.includes('다시 연동')) {
+      hintEl.textContent = '⚠ ' + e.message;
+    } else {
+      hintEl.textContent = '';
+    }
   }
 });
 document.getElementById('btn-cancel-clients-sheet').addEventListener('click', () => {

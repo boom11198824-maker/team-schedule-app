@@ -1366,6 +1366,20 @@ app.get('/api/google/status', requireLogin, (req, res) => {
   res.json({ connected: isGoogleConnected(), calendarSummary: row ? row.calendar_summary : null, connectedAt: row ? row.connected_at : null });
 });
 
+// 현재 연동된 구글 계정이 어떤 이메일인지 확인 (의뢰인 시트 등을 공유할 때 어떤 계정에 공유해야 하는지 알려주기 위함)
+app.get('/api/google/whoami', requireAdmin, async (req, res) => {
+  if (!isGoogleConnected()) return res.status(400).json({ error: '구글 계정이 연동되어 있지 않습니다.' });
+  try {
+    const client = await getAuthorizedGoogleClient();
+    const drive = google.drive({ version: 'v3', auth: client });
+    const about = await drive.about.get({ fields: 'user(displayName,emailAddress)' });
+    res.json({ email: about.data.user ? about.data.user.emailAddress : null, displayName: about.data.user ? about.data.user.displayName : null });
+  } catch (err) {
+    console.error('구글 계정 조회 실패:', err.message);
+    res.status(500).json({ error: '연동된 구글 계정 정보를 가져오지 못했습니다: ' + err.message });
+  }
+});
+
 app.get('/api/google/auth-url', requireAdmin, (req, res) => {
   try { res.json({ url: getGoogleAuthUrl() }); } catch (err) { res.status(500).json({ error: err.message }); }
 });

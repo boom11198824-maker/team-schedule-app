@@ -434,6 +434,7 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
     <div class="modal">
       <h2>📋 의뢰인 시트 연결</h2>
       <p class="empty-note" style="text-align:left; padding:0 0 8px;">이미 만들어두신 구글시트의 의뢰인 명단 탭을 연결합니다. 이 탭은 앱에서 읽기만 하고 절대 수정하지 않습니다.</p>
+      <p id="clients-sheet-account-hint" class="empty-note" style="text-align:left; padding:0 0 8px; color:var(--brand-coral, #ff6452);"></p>
       <label>구글시트 주소 *</label>
       <input type="text" id="clients-sheet-url" placeholder="https://docs.google.com/spreadsheets/d/..." />
       <label>의뢰인 명단 탭 이름</label>
@@ -1003,12 +1004,24 @@ document.getElementById('btn-save-client-docs').addEventListener('click', async 
 
 /* ---- 관리자: 의뢰인 명단 구글시트 연결 ---- */
 
-document.getElementById('btn-clients-sheet').addEventListener('click', () => {
+document.getElementById('btn-clients-sheet').addEventListener('click', async () => {
   document.getElementById('clients-sheet-error').textContent = '';
   if (sheetsStatus.clientsConnected) {
     document.getElementById('clients-sheet-tab').value = sheetsStatus.clientsTab || '시트1';
   }
+  const hintEl = document.getElementById('clients-sheet-account-hint');
+  hintEl.textContent = '연동된 구글 계정 확인 중...';
   document.getElementById('clients-sheet-modal').classList.remove('hidden');
+  try {
+    const who = await api('/api/google/whoami');
+    hintEl.textContent = who.email
+      ? `⚠ 이 구글 계정(${who.email})에 시트를 "편집자"로 공유해야 연결됩니다.`
+      : '';
+  } catch (e) {
+    hintEl.textContent = e.message && e.message.includes('연동되어 있지 않')
+      ? '⚠ 먼저 "구글 캘린더 연동"을 완료해주세요 (팀 스케줄 화면).'
+      : '';
+  }
 });
 document.getElementById('btn-cancel-clients-sheet').addEventListener('click', () => {
   document.getElementById('clients-sheet-modal').classList.add('hidden');

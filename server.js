@@ -97,6 +97,24 @@ CREATE TABLE IF NOT EXISTS case_tasks (
 CREATE INDEX IF NOT EXISTS idx_case_tasks_case_id ON case_tasks(case_id);
 CREATE INDEX IF NOT EXISTS idx_case_tasks_due_date ON case_tasks(due_date);
 CREATE INDEX IF NOT EXISTS idx_case_tasks_status ON case_tasks(status);
+
+-- 의뢰인별 인감도장/공동인증서 USB 수령 여부 추적. 의뢰인 명단 자체는 외부 구글시트가
+-- 원본(읽기 전용)이라 여기 쓸 수 없으므로, 이 앱만의 추가 정보를 의뢰인명(+사건번호)으로
+-- 매칭해서 별도 테이블에 보관한다.
+CREATE TABLE IF NOT EXISTS client_documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  client_name_key TEXT NOT NULL,
+  court_case_no_key TEXT NOT NULL DEFAULT '',
+  client_name TEXT NOT NULL,
+  court_case_no TEXT,
+  seal_received INTEGER NOT NULL DEFAULT 0,
+  seal_received_date TEXT,
+  cert_usb_received INTEGER NOT NULL DEFAULT 0,
+  cert_usb_received_date TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_documents_key ON client_documents(client_name_key, court_case_no_key);
 `);
 
 // 구글시트 내보내기(백업/공유용) 정보를 저장할 컬럼 - 기존 DB에 없으면 추가
@@ -120,6 +138,14 @@ try {
 } catch (err) {
   if (!String(err.message).includes('duplicate column')) throw err;
 }
+// 기존에 이미 만들어져 있는 외부 "의뢰인 명단" 구글시트를 사건목록 소스로 연결할 때 쓰는 컬럼
+// (자체 생성한 sheets_spreadsheet_id와 같은 스프레드시트를 가리키게 되며, 그 안의 어느 탭이
+// 의뢰인 명단인지만 이 컬럼에 별도로 기억해둔다).
+try {
+  db.exec("ALTER TABLE google_auth ADD COLUMN clients_sheet_tab TEXT");
+} catch (err) {
+  if (!String(err.message).includes('duplicate column')) throw err;
+}
 
 // 기존 DB에 category 컬럼이 없는 경우를 위한 마이그레이션 (이미 있으면 조용히 무시)
 try {
@@ -127,6 +153,41 @@ try {
 } catch (err) {
   if (!String(err.message).includes('duplicate column')) throw err;
 }
+
+// 사건상세 페이지용 컬럼: 사건유형(개인회생/개인파산 등), 접수일, 담당변호사, 현재단계
+for (const col of ['case_type TEXT', 'intake_date TEXT', 'assigned_lawyer TEXT', 'current_stage TEXT']) {
+  try {
+    db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
+  } catch (err) {
+    if (!String(err.message).includes('duplicate column')) throw err;
+  }
+}
+
+// 수임료: 사건당 총액 1건 + 회차별 분할납부 내역
+db.exec(`
+CREATE TABLE IF NOT EXISTS case_fees (
+  case_id INTEGER PRIMARY KEY,
+  total_amount INTEGER NOT NULL DEFAULT 0,
+  memo TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (case_id) REFERENCES cases(id)
+);
+
+CREATE TABLE IF NOT EXISTS case_fee_installments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 1,
+  amount INTEGER NOT NULL DEFAULT 0,
+  due_date TEXT,
+  status TEXT NOT NULL DEFAULT '예정',
+  paid_date TEXT,
+  memo TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (case_id) REFERENCES cases(id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_fee_installments_case_id ON case_fee_installments(case_id);
+`);
 
 /* ------------------------------------------------------------------ */
 /* 인증 / 권한                                                         */
@@ -496,7 +557,9 @@ async function exportCasesToGoogleSheet() {
 function normalizeMatchKey(s) { return String(s || '').trim().replace(/\s+/g, ''); }
 
 // 의뢰인명(+선택적으로 사건번호)으로 사건을 찾는다. 동명이인이 여러 명이면
-// 사건번호가 일치하는 쪽을 우선하고, 그래도 못 정하면 가장 최근에 등록된 사건을 사용.
+// 사건번호가 일치하는 쪽을 우선하고, 그래도 못 정하면 목록에서 가장 나중 순서(=최근)인 쪽을 사용.
+// 비교용 정렬 키는 `_sortKey`(숫자)로 통일해서, SQLite 사건(id)이든 외부 시트 의뢰인(행 번호)이든
+// 같은 로직으로 동점 처리할 수 있게 한다.
 function matchCaseByNameAndCaseNo(cases, clientName, courtCaseNo) {
   const nameKey = normalizeMatchKey(clientName);
   if (!nameKey) return null;
@@ -509,7 +572,51 @@ function matchCaseByNameAndCaseNo(cases, clientName, courtCaseNo) {
     const exact = candidates.find((c) => normalizeMatchKey(c.court_case_no) === caseNoKey);
     if (exact) return exact;
   }
-  return candidates.reduce((latest, c) => (c.id > latest.id ? c : latest), candidates[0]);
+  return candidates.reduce((latest, c) => (c._sortKey > latest._sortKey ? c : latest), candidates[0]);
+}
+
+// 진홍 님이 이미 만들어둔 외부 "의뢰인 명단" 구글시트(예: [법진 사건관리] 스프레드시트의 특정 탭)를
+// 읽어온다. 이 탭은 보통 IMPORTRANGE 등으로 채워진 읽기 전용 원본이라 앱에서 절대 쓰지 않는다.
+// clients_sheet_tab이 설정되어 있지 않으면 null을 반환해서 호출 측이 SQLite cases로 폴백하게 한다.
+async function readClientsFromExternalSheet() {
+  const authRow = getStoredGoogleAuth();
+  if (!authRow || !authRow.sheets_spreadsheet_id || !authRow.clients_sheet_tab) return null;
+
+  const client = await getSheetsAuthorizedClient();
+  if (!client) return null;
+
+  const sheets = google.sheets({ version: 'v4', auth: client });
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: authRow.sheets_spreadsheet_id,
+    range: `${authRow.clients_sheet_tab}!A2:E100000`,
+  });
+  const rows = resp.data.values || [];
+
+  const clients = [];
+  rows.forEach((row, i) => {
+    // A=순번, B=이름, C=전화번호, D=법원, E=사건번호
+    const [, name, phone, court, courtCaseNo] = row;
+    if (!name) return;
+    clients.push({
+      id: `client-${i}`,
+      _sortKey: i,
+      source: 'external-client',
+      client_name: name,
+      phone: phone || '',
+      court: court || '',
+      court_case_no: courtCaseNo || '',
+      assignee_name: '',
+    });
+  });
+  return clients;
+}
+
+// 사건 매칭에 쓸 후보 목록을 가져온다: 외부 의뢰인 명단이 연결돼 있으면 그걸 우선 쓰고,
+// 아니면 앱 자체 SQLite cases 테이블로 폴백한다 (기존 동작과 동일하게 유지).
+async function getMatchCandidates() {
+  const external = await readClientsFromExternalSheet();
+  if (external) return external;
+  return db.prepare('SELECT * FROM cases').all().map((c) => Object.assign({ _sortKey: c.id }, c));
 }
 
 // 관리자 대시보드용: 일정_보정관리 탭을 실시간으로 읽어와 case_tasks와 같은 모양으로 변환.
@@ -527,7 +634,7 @@ async function readTasksFromSheetIfConnected() {
     range: `${SHEETS_TITLE_TASKS}!A2:H100000`,
   });
   const rows = resp.data.values || [];
-  const cases = db.prepare('SELECT * FROM cases').all();
+  const cases = await getMatchCandidates();
 
   const tasks = [];
   let skipped = 0;
@@ -693,15 +800,24 @@ app.get('/api/schedules', requireLogin, (req, res) => {
 
 const SCHEDULE_CATEGORIES = ['업무', '보정', '상담', '휴가', '기타'];
 
+// 일정은 시/분/초 없이 날짜 단위로만 관리한다 (하루 종일 이벤트로 고정).
+// yyyy-mm-dd 앞 10자리만 취해서 자정(+09:00) 기준으로 다시 조립 - 어떤 형식으로 들어와도 항상 이 규칙을 강제한다.
+function toAllDayDateTime(dateStr) {
+  const datePart = String(dateStr || '').slice(0, 10);
+  return `${datePart}T00:00:00+09:00`;
+}
+
 app.post('/api/schedules', requireLogin, async (req, res) => {
-  const { title, description, location, start_at, end_at, all_day, assignee_name, category } = req.body || {};
-  if (!title || !start_at || !end_at) return res.status(400).json({ error: '제목, 시작일시, 종료일시는 필수입니다.' });
+  const { title, description, location, start_at, end_at, assignee_name, category } = req.body || {};
+  if (!title || !start_at || !end_at) return res.status(400).json({ error: '제목, 시작일, 종료일은 필수입니다.' });
   const safeCategory = SCHEDULE_CATEGORIES.includes(category) ? category : '업무';
+  const normalizedStart = toAllDayDateTime(start_at);
+  const normalizedEnd = toAllDayDateTime(end_at);
 
   const info = db
     .prepare(`INSERT INTO schedules (title, description, location, start_at, end_at, all_day, assignee_name, category, created_by)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(title, description || '', location || '', start_at, end_at, all_day ? 1 : 0, assignee_name || '', safeCategory, req.user.id);
+    .run(title, description || '', location || '', normalizedStart, normalizedEnd, 1, assignee_name || '', safeCategory, req.user.id);
 
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(info.lastInsertRowid);
 
@@ -721,14 +837,14 @@ app.put('/api/schedules/:id', requireLogin, async (req, res) => {
   if (!schedule) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
   if (!canModifySchedule(req.user, schedule)) return res.status(403).json({ error: '본인이 등록한 일정만 수정할 수 있습니다.' });
 
-  const { title, description, location, start_at, end_at, all_day, assignee_name, category } = req.body || {};
+  const { title, description, location, start_at, end_at, assignee_name, category } = req.body || {};
   const updated = {
     title: title ?? schedule.title,
     description: description ?? schedule.description,
     location: location ?? schedule.location,
-    start_at: start_at ?? schedule.start_at,
-    end_at: end_at ?? schedule.end_at,
-    all_day: all_day === undefined ? schedule.all_day : (all_day ? 1 : 0),
+    start_at: start_at ? toAllDayDateTime(start_at) : schedule.start_at,
+    end_at: end_at ? toAllDayDateTime(end_at) : schedule.end_at,
+    all_day: 1,
     assignee_name: assignee_name ?? schedule.assignee_name,
     category: SCHEDULE_CATEGORIES.includes(category) ? category : schedule.category,
   };
@@ -774,14 +890,23 @@ app.get('/api/cases', requireLogin, (req, res) => {
   res.json(db.prepare('SELECT * FROM cases ORDER BY id DESC').all());
 });
 
+app.get('/api/cases/:id', requireLogin, (req, res) => {
+  const c = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+  res.json(c);
+});
+
 app.post('/api/cases', requireLogin, (req, res) => {
-  const { client_name, phone, court, court_case_no, assignee_name, memo } = req.body || {};
+  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage } = req.body || {};
   if (!client_name) return res.status(400).json({ error: '의뢰인명은 필수입니다.' });
 
   const info = db
-    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, created_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(client_name, phone || '', court || '', court_case_no || '', assignee_name || '', memo || '', req.user.id);
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, created_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      client_name, phone || '', court || '', court_case_no || '', assignee_name || '', memo || '',
+      case_type || '', intake_date || '', assigned_lawyer || '', current_stage || '', req.user.id
+    );
 
   res.status(201).json(db.prepare('SELECT * FROM cases WHERE id = ?').get(info.lastInsertRowid));
 });
@@ -790,7 +915,7 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
   const existing = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
 
-  const { client_name, phone, court, court_case_no, assignee_name, memo } = req.body || {};
+  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage } = req.body || {};
   const updated = {
     client_name: client_name ?? existing.client_name,
     phone: phone ?? existing.phone,
@@ -798,9 +923,16 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
     court_case_no: court_case_no ?? existing.court_case_no,
     assignee_name: assignee_name ?? existing.assignee_name,
     memo: memo ?? existing.memo,
+    case_type: case_type ?? existing.case_type,
+    intake_date: intake_date ?? existing.intake_date,
+    assigned_lawyer: assigned_lawyer ?? existing.assigned_lawyer,
+    current_stage: current_stage ?? existing.current_stage,
   };
-  db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=? WHERE id = ?`)
-    .run(updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo, existing.id);
+  db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, assigned_lawyer=?, current_stage=? WHERE id = ?`)
+    .run(
+      updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo,
+      updated.case_type, updated.intake_date, updated.assigned_lawyer, updated.current_stage, existing.id
+    );
 
   res.json(db.prepare('SELECT * FROM cases WHERE id = ?').get(existing.id));
 });
@@ -814,8 +946,79 @@ app.delete('/api/cases/:id', requireLogin, async (req, res) => {
     try { if (t.google_event_id) await googleDeleteEvent(t.google_event_id); } catch (err) { console.error('구글 캘린더 삭제 실패:', err.message); }
   }
   db.prepare('DELETE FROM case_tasks WHERE case_id = ?').run(existing.id);
+  db.prepare('DELETE FROM case_fee_installments WHERE case_id = ?').run(existing.id);
+  db.prepare('DELETE FROM case_fees WHERE case_id = ?').run(existing.id);
   db.prepare('DELETE FROM cases WHERE id = ?').run(existing.id);
 
+  res.json({ ok: true });
+});
+
+/* ---- /api/cases/:id/fee (수임료 총액 + 회차별 분할납부) ---- */
+
+const FEE_INSTALLMENT_STATUSES = ['예정', '완료'];
+
+app.get('/api/cases/:id/fee', requireAdmin, (req, res) => {
+  const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  const fee = db.prepare('SELECT * FROM case_fees WHERE case_id = ?').get(existing.id) || { case_id: existing.id, total_amount: 0, memo: '' };
+  const installments = db.prepare('SELECT * FROM case_fee_installments WHERE case_id = ? ORDER BY seq ASC, id ASC').all(existing.id);
+  res.json({ total_amount: fee.total_amount, memo: fee.memo || '', installments });
+});
+
+app.put('/api/cases/:id/fee', requireAdmin, (req, res) => {
+  const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  const { total_amount, memo } = req.body || {};
+  const amount = Number(total_amount) || 0;
+  db.prepare(`
+    INSERT INTO case_fees (case_id, total_amount, memo, updated_at) VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(case_id) DO UPDATE SET total_amount = excluded.total_amount, memo = excluded.memo, updated_at = datetime('now')
+  `).run(existing.id, amount, memo || '');
+
+  res.json({ total_amount: amount, memo: memo || '' });
+});
+
+app.post('/api/cases/:id/fee-installments', requireAdmin, (req, res) => {
+  const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  const { seq, amount, due_date, status, paid_date, memo } = req.body || {};
+  const safeStatus = FEE_INSTALLMENT_STATUSES.includes(status) ? status : '예정';
+
+  const info = db.prepare(`
+    INSERT INTO case_fee_installments (case_id, seq, amount, due_date, status, paid_date, memo)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(existing.id, Number(seq) || 1, Number(amount) || 0, due_date || '', safeStatus, safeStatus === '완료' ? (paid_date || '') : '', memo || '');
+
+  res.status(201).json(db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(info.lastInsertRowid));
+});
+
+app.patch('/api/fee-installments/:id', requireAdmin, (req, res) => {
+  const existing = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '납부 회차를 찾을 수 없습니다.' });
+
+  const { seq, amount, due_date, status, paid_date, memo } = req.body || {};
+  const safeStatus = status !== undefined ? (FEE_INSTALLMENT_STATUSES.includes(status) ? status : existing.status) : existing.status;
+  const updated = {
+    seq: seq !== undefined ? (Number(seq) || existing.seq) : existing.seq,
+    amount: amount !== undefined ? (Number(amount) || 0) : existing.amount,
+    due_date: due_date ?? existing.due_date,
+    status: safeStatus,
+    paid_date: safeStatus === '완료' ? (paid_date ?? existing.paid_date ?? '') : '',
+    memo: memo ?? existing.memo,
+  };
+  db.prepare(`UPDATE case_fee_installments SET seq=?, amount=?, due_date=?, status=?, paid_date=?, memo=?, updated_at=datetime('now') WHERE id = ?`)
+    .run(updated.seq, updated.amount, updated.due_date, updated.status, updated.paid_date, updated.memo, existing.id);
+
+  res.json(db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(existing.id));
+});
+
+app.delete('/api/fee-installments/:id', requireAdmin, (req, res) => {
+  const existing = db.prepare('SELECT id FROM case_fee_installments WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '납부 회차를 찾을 수 없습니다.' });
+  db.prepare('DELETE FROM case_fee_installments WHERE id = ?').run(existing.id);
   res.json({ ok: true });
 });
 
@@ -976,6 +1179,8 @@ app.get('/api/sheets/status', requireLogin, (req, res) => {
     url: spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : null,
     lastSyncedAt: (row && row.sheets_last_synced_at) || null,
     tasksManagedInSheet: !!(row && row.tasks_source === 'sheet'),
+    clientsConnected: !!(row && row.clients_sheet_tab),
+    clientsTab: (row && row.clients_sheet_tab) || null,
   });
 });
 
@@ -986,6 +1191,171 @@ app.post('/api/sheets/export', requireAdmin, async (req, res) => {
   } catch (err) {
     const status = err.code === 'NOT_CONNECTED' || err.code === 'NEEDS_RECONSENT' ? 400 : 500;
     res.status(status).json({ error: err.message, code: err.code || null });
+  }
+});
+
+/* ---- /api/clients (기존에 만들어둔 외부 "의뢰인 명단" 구글시트 연동) ---- */
+
+// 관리자가 이미 갖고 있는 스프레드시트(예: [법진 사건관리])의 의뢰인 명단 탭을 연결한다.
+// 1) 그 탭이 실제로 읽히는지 확인하고, 2) 같은 스프레드시트 안에 새 일정을 append할
+// [일정_보정관리] 탭이 없으면 헤더와 함께 새로 만든 뒤, 3) 연동 정보를 저장한다.
+// 의뢰인 명단 탭(예: 시트1)은 절대 건드리지 않는다 (읽기 전용, 보통 IMPORTRANGE로 채워져 있음).
+app.post('/api/admin/clients-sheet', requireAdmin, async (req, res) => {
+  const { url, tab } = req.body || {};
+  const m = String(url || '').match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (!m) return res.status(400).json({ error: '구글시트 주소가 올바르지 않습니다. 브라우저 주소창의 전체 링크를 붙여넣어주세요.' });
+  const spreadsheetId = m[1];
+  const tabName = (tab || '시트1').trim();
+
+  try {
+    const client = await getSheetsAuthorizedClient();
+    if (!client) {
+      const err = new Error('구글 계정이 연동되어 있지 않습니다. 먼저 구글 캘린더 연동을 진행해주세요.');
+      err.code = 'NOT_CONNECTED';
+      throw err;
+    }
+    const sheets = google.sheets({ version: 'v4', auth: client });
+
+    // 1) 의뢰인 명단 탭이 실제로 읽히는지 확인
+    const clientsResp = await sheets.spreadsheets.values.get({
+      spreadsheetId, range: `${tabName}!A2:E100000`,
+    });
+    const clientCount = (clientsResp.data.values || []).filter((r) => r[1]).length;
+    if (!clientCount) {
+      return res.status(400).json({ error: `"${tabName}" 탭에서 의뢰인 이름(B열)을 하나도 찾지 못했습니다. 탭 이름이나 열 구성을 확인해주세요.` });
+    }
+
+    // 2) 일정_보정관리 탭이 없으면 새로 생성 (기존 탭은 절대 건드리지 않음)
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const hasTasksTab = meta.data.sheets.some((s) => s.properties.title === SHEETS_TITLE_TASKS);
+    if (!hasTasksTab) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: SHEETS_TITLE_TASKS } } }] },
+      });
+      await sheets.spreadsheets.values.update({
+        spreadsheetId, range: `${SHEETS_TITLE_TASKS}!A1`, valueInputOption: 'RAW', requestBody: { values: [TASKS_SHEET_HEADER] },
+      });
+    }
+
+    // 3) 연동 정보 저장
+    db.prepare("UPDATE google_auth SET sheets_spreadsheet_id = ?, clients_sheet_tab = ?, tasks_source = 'sheet' WHERE id = 1")
+      .run(spreadsheetId, tabName);
+
+    res.json({ ok: true, clientCount, tab: tabName, tasksTabCreated: !hasTasksTab });
+  } catch (err) {
+    if (err.code === 'NOT_CONNECTED') return res.status(400).json({ error: err.message, code: err.code });
+    if (err.code === 403 || /insufficient|permission/i.test(err.message || '')) {
+      return res.status(403).json({
+        error: '이 스프레드시트에 대한 접근 권한이 없습니다. 구글 캘린더 연동에 사용 중인 계정과 이 시트를 공유(편집자 권한)해주세요.',
+        code: 'NO_ACCESS',
+      });
+    }
+    if (/Unable to parse range|not found/i.test(err.message || '')) {
+      return res.status(400).json({ error: `"${tabName}" 이라는 이름의 탭을 찾을 수 없습니다. 탭 이름을 다시 확인해주세요.` });
+    }
+    console.error('의뢰인 시트 연결 실패:', err.message);
+    res.status(500).json({ error: '연결 중 오류가 발생했습니다: ' + err.message });
+  }
+});
+
+// 인감도장/공동인증서 USB 수령 여부는 앱 자체 SQLite에 보관 (원본 시트는 읽기 전용이라 쓸 수 없음).
+function getClientDocs(clientName, courtCaseNo) {
+  return db.prepare('SELECT * FROM client_documents WHERE client_name_key = ? AND court_case_no_key = ?')
+    .get(normalizeMatchKey(clientName), normalizeMatchKey(courtCaseNo));
+}
+
+function attachClientDocs(c) {
+  const docs = getClientDocs(c.client_name, c.court_case_no);
+  return Object.assign({}, c, {
+    seal_received: !!(docs && docs.seal_received),
+    seal_received_date: (docs && docs.seal_received_date) || '',
+    cert_usb_received: !!(docs && docs.cert_usb_received),
+    cert_usb_received_date: (docs && docs.cert_usb_received_date) || '',
+  });
+}
+
+// getClients() 역할: 자동완성/검색창에 쓸 의뢰인 목록을 돌려준다. 인감도장·USB 수령 여부도 같이 붙여서 준다.
+app.get('/api/clients', requireLogin, async (req, res) => {
+  try {
+    const clients = await readClientsFromExternalSheet();
+    res.json((clients || []).map(attachClientDocs));
+  } catch (err) {
+    console.error('의뢰인 목록 읽기 실패:', err.message);
+    res.status(500).json({ error: '의뢰인 목록을 불러오지 못했습니다: ' + err.message });
+  }
+});
+
+// 인감도장/공동인증서 USB 수령 여부를 저장한다 (의뢰인명+사건번호로 upsert).
+app.post('/api/clients/documents', requireLogin, (req, res) => {
+  const { client_name, court_case_no, seal_received, seal_received_date, cert_usb_received, cert_usb_received_date } = req.body || {};
+  if (!client_name) return res.status(400).json({ error: '의뢰인명이 필요합니다.' });
+
+  const nameKey = normalizeMatchKey(client_name);
+  const caseNoKey = normalizeMatchKey(court_case_no);
+  const sealReceived = seal_received ? 1 : 0;
+  const certReceived = cert_usb_received ? 1 : 0;
+
+  db.prepare(`
+    INSERT INTO client_documents (client_name_key, court_case_no_key, client_name, court_case_no, seal_received, seal_received_date, cert_usb_received, cert_usb_received_date, updated_at, updated_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+    ON CONFLICT(client_name_key, court_case_no_key) DO UPDATE SET
+      client_name = excluded.client_name,
+      court_case_no = excluded.court_case_no,
+      seal_received = excluded.seal_received,
+      seal_received_date = excluded.seal_received_date,
+      cert_usb_received = excluded.cert_usb_received,
+      cert_usb_received_date = excluded.cert_usb_received_date,
+      updated_at = datetime('now'),
+      updated_by = excluded.updated_by
+  `).run(
+    nameKey, caseNoKey, client_name, court_case_no || '',
+    sealReceived, sealReceived ? (seal_received_date || '') : '',
+    certReceived, certReceived ? (cert_usb_received_date || '') : '',
+    req.user.id
+  );
+
+  res.json({
+    ok: true,
+    seal_received: !!sealReceived,
+    seal_received_date: sealReceived ? (seal_received_date || '') : '',
+    cert_usb_received: !!certReceived,
+    cert_usb_received_date: certReceived ? (cert_usb_received_date || '') : '',
+  });
+});
+
+// addSchedule() 역할: 선택한 의뢰인 정보 + 할 일 + 마감일을 [일정_보정관리] 탭 맨 아래에 추가한다.
+app.post('/api/clients/schedule', requireLogin, async (req, res) => {
+  const { client_name, court_case_no, task_type, due_date, received_date, assignee_name, memo } = req.body || {};
+  if (!client_name || !task_type || !due_date) {
+    return res.status(400).json({ error: '의뢰인, 업무구분, 마감예정일은 필수입니다.' });
+  }
+
+  const authRow = getStoredGoogleAuth();
+  if (!authRow || !authRow.sheets_spreadsheet_id || !authRow.clients_sheet_tab) {
+    return res.status(400).json({ error: '의뢰인 시트가 아직 연동되어 있지 않습니다.', code: 'NOT_CONNECTED' });
+  }
+
+  try {
+    const client = await getSheetsAuthorizedClient();
+    if (!client) { const err = new Error('구글 계정이 연동되어 있지 않습니다.'); err.code = 'NOT_CONNECTED'; throw err; }
+    const sheets = google.sheets({ version: 'v4', auth: client });
+
+    const row = [
+      client_name, task_type, received_date || '', due_date,
+      '예정', assignee_name || (req.user && req.user.name) || '', court_case_no || '', memo || '',
+    ];
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: authRow.sheets_spreadsheet_id,
+      range: `${SHEETS_TITLE_TASKS}!A1`,
+      valueInputOption: 'RAW',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [row] },
+    });
+
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error('일정 등록(시트 append) 실패:', err.message);
+    res.status(500).json({ error: '일정을 시트에 저장하지 못했습니다: ' + err.message, code: err.code || null });
   }
 });
 
@@ -1041,6 +1411,16 @@ app.get('/app.html', (req, res) => {
 app.get('/cases.html', (req, res) => {
   if (!req.session || !req.session.userId) return res.redirect('/');
   res.sendFile(path.join(__dirname, 'cases.html'));
+});
+
+app.get('/clients.html', (req, res) => {
+  if (!req.session || !req.session.userId) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'clients.html'));
+});
+
+app.get('/case-detail.html', (req, res) => {
+  if (!req.session || !req.session.userId) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'case-detail.html'));
 });
 
 app.get('/', (req, res) => { res.sendFile(path.join(__dirname, 'index.html')); });

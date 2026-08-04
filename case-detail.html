@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>사건상세 · 사건관리</title>
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta name="theme-color" content="#14213d" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="팀 스케줄" />
+<style>
+:root {
+  --brand-navy:     #14213d;
+  --brand-navy-dark:#0b1626;
+  --brand-coral:    #ff6452;
+  --brand-coral-dark:#e5503f;
+
+  --surface-1:      #f7f8fa;
+  --card-surface:   #ffffff;
+  --text-primary:   #14213d;
+  --text-secondary: #4b5a78;
+  --text-muted:     #8993a6;
+  --gridline:       #e2e6ed;
+  --border:         rgba(20,33,61,0.12);
+
+  --status-good:        #1e8e5a;
+  --status-warning:     #d99a06;
+  --status-serious:     #d9773e;
+  --status-critical:    #d6394a;
+  --status-good-bg:     #e3f5ec;
+  --status-warning-bg:  #fbf0da;
+  --status-serious-bg:  #fbebdd;
+  --status-critical-bg: #fbe4e4;
+  --status-muted-bg:    #eef0f4;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; background: white; border-bottom: 1px solid var(--gridline);
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-left h1 { font-size: 18px; margin: 0; color: var(--brand-navy); }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.user-name { font-size: 14px; color: var(--text-secondary); font-weight: 600; }
+
+button.btn-secondary, a.btn-secondary {
+  background: #eef1f6; color: var(--text-secondary); border: 1px solid var(--gridline); padding: 8px 14px;
+  border-radius: 8px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block;
+}
+button.btn-secondary:hover, a.btn-secondary:hover { background: #e2e6ed; }
+button.btn-primary {
+  background: var(--brand-coral); color: white; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-primary:hover { background: var(--brand-coral-dark); }
+button.btn-danger {
+  background: #fbe4e4; color: #b23a3a; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-danger:hover { background: #f7d0d0; }
+button.btn-small {
+  font-size: 12px; padding: 5px 9px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card-surface); color: var(--text-secondary);
+}
+button.btn-small:hover { background: #eef1f6; }
+button:disabled { opacity: 0.6; cursor: default; }
+
+main { max-width: 860px; margin: 0 auto; padding: 20px 20px 60px; }
+
+.back-link { font-size: 13px; color: var(--text-secondary); text-decoration: none; display: inline-block; margin-bottom: 10px; }
+.back-link:hover { color: var(--brand-navy); }
+
+.detail-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.detail-header h2 { font-size: 24px; margin: 0; }
+.stage-badge {
+  font-size: 13px; font-weight: 700; padding: 4px 12px; border-radius: 999px;
+  background: var(--brand-navy); color: white;
+}
+.stage-badge.empty { background: var(--status-muted-bg); color: var(--text-muted); }
+.case-subtitle { font-size: 13px; color: var(--text-muted); margin: -12px 0 20px; }
+
+.card {
+  background: var(--card-surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px; margin-bottom: 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.card h3 { margin: 0 0 14px; font-size: 15px; }
+.card h3 .sub { font-size: 12px; font-weight: 400; color: var(--text-muted); }
+
+label { display: block; font-size: 13px; margin: 12px 0 4px; color: var(--text-secondary); }
+input, select, textarea {
+  width: 100%; padding: 9px 11px; border: 1px solid #d7dce6; border-radius: 8px; font-size: 14px;
+  font-family: inherit; background: white; color: var(--text-primary);
+}
+.row { display: flex; gap: 12px; }
+.row > div { flex: 1; }
+.spacer { flex: 1; }
+.actions-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+.hidden { display: none !important; }
+.error-text { color: #b23a3a; font-size: 13px; margin: 8px 0 0; min-height: 0; }
+.success-text { color: var(--status-good); font-size: 13px; margin: 8px 0 0; min-height: 0; }
+.empty-note { font-size: 13px; color: var(--text-muted); padding: 10px 2px; }
+
+.recent-submit {
+  font-size: 13px; color: var(--text-secondary); background: var(--status-muted-bg);
+  border-radius: 8px; padding: 10px 12px; margin: 0 0 18px;
+}
+
+.task-table, .fee-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; }
+.task-table th, .task-table td, .fee-table th, .fee-table td {
+  text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--gridline); vertical-align: middle;
+}
+.task-table td.actions-cell, .fee-table td.actions-cell { white-space: nowrap; text-align: right; }
+.status-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.status-pill.예정 { background: var(--status-muted-bg); color: var(--text-secondary); }
+.status-pill.진행중 { background: var(--status-warning-bg); color: var(--status-warning); }
+.status-pill.완료 { background: var(--status-good-bg); color: var(--status-good); }
+
+.mini-form { background: #f7f8fa; border: 1px solid var(--gridline); border-radius: 10px; padding: 12px; margin-top: 12px; }
+.mini-form-title { font-size: 12px; font-weight: 700; color: var(--text-secondary); margin-bottom: 6px; }
+
+.fee-summary { display: flex; gap: 18px; margin: 4px 0 14px; flex-wrap: wrap; }
+.fee-summary .item { font-size: 13px; color: var(--text-secondary); }
+.fee-summary .item b { display: block; font-size: 18px; color: var(--text-primary); }
+
+@media (max-width: 640px) {
+  .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .topbar-left h1 { font-size: 16px; }
+  .topbar-right { gap: 6px; }
+  .topbar-right .user-name { display: none; }
+  button.btn-secondary, a.btn-secondary { padding: 7px 10px; font-size: 12px; }
+  main { padding: 12px; }
+  .row { flex-direction: column; gap: 0; }
+}
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1>📁 사건상세</h1>
+    </div>
+    <div class="topbar-right">
+      <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
+      <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
+      <a href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
+      <span id="user-name" class="user-name"></span>
+      <button id="btn-logout" class="btn-secondary">로그아웃</button>
+    </div>
+  </header>
+
+  <main>
+    <a href="/cases.html" class="back-link">← 사건관리로</a>
+
+    <p id="load-error" class="error-text hidden"></p>
+
+    <div id="content" class="hidden">
+      <div class="detail-header">
+        <h2 id="detail-name">-</h2>
+        <span id="stage-badge" class="stage-badge empty">단계 미지정</span>
+      </div>
+      <p class="case-subtitle" id="detail-subtitle"></p>
+
+      <p id="recent-submit" class="recent-submit"></p>
+
+      <!-- 기본정보 -->
+      <div class="card">
+        <h3>기본정보</h3>
+        <form id="info-form">
+          <div class="row">
+            <div>
+              <label>의뢰인명 *</label>
+              <input type="text" id="f-client" required />
+            </div>
+            <div>
+              <label>연락처</label>
+              <input type="text" id="f-phone" placeholder="010-0000-0000" />
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>사건유형</label>
+              <input type="text" id="f-case-type" list="case-type-options" placeholder="예: 개인회생" />
+              <datalist id="case-type-options">
+                <option value="개인회생"></option>
+                <option value="개인파산"></option>
+                <option value="법인회생"></option>
+                <option value="법인파산"></option>
+                <option value="기타"></option>
+              </datalist>
+            </div>
+            <div>
+              <label>접수일</label>
+              <input type="text" class="date-field" id="f-intake-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>담당직원</label>
+              <input type="text" id="f-assignee" placeholder="예: 진홍" />
+            </div>
+            <div>
+              <label>담당변호사</label>
+              <input type="text" id="f-lawyer" placeholder="예: 홍변호사" />
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>관할법원</label>
+              <input type="text" id="f-court" placeholder="예: 수원회생법원" />
+            </div>
+            <div>
+              <label>사건번호</label>
+              <input type="text" id="f-caseno" placeholder="예: 2026개회12345" />
+            </div>
+          </div>
+          <label>현재단계</label>
+          <select id="f-stage"></select>
+          <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">※ 사건유형을 입력하면 그에 맞는 단계 목록으로 바뀝니다.</p>
+
+          <label>메모</label>
+          <textarea id="f-memo" rows="2"></textarea>
+
+          <p id="info-error" class="error-text"></p>
+          <p id="info-success" class="success-text hidden">✅ 저장되었습니다.</p>
+          <div class="actions-row">
+            <button type="button" id="btn-delete-case" class="btn-danger">사건 삭제</button>
+            <div class="spacer"></div>
+            <button type="submit" class="btn-primary">저장</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- 서류·보정 일정 -->
+      <div class="card">
+        <h3>서류·보정 일정</h3>
+
+        <p id="task-sheet-notice" class="empty-note hidden">
+          📊 이 사건의 서류·보정 일정은 <a id="task-sheet-link" href="#" target="_blank" rel="noopener">구글시트</a>에서 직원이 직접 입력/수정합니다. 여기서는 조회만 가능합니다.
+        </p>
+
+        <table class="task-table">
+          <thead><tr><th>업무구분</th><th>수령일</th><th>마감예정일</th><th>상태</th><th></th></tr></thead>
+          <tbody id="task-tbody"></tbody>
+        </table>
+        <p id="task-empty-note" class="empty-note hidden">등록된 일정이 없습니다.</p>
+
+        <div class="mini-form" id="task-mini-form-wrap">
+          <div class="mini-form-title" id="task-form-title">새 일정 추가</div>
+          <form id="task-form">
+            <input type="hidden" id="task-id" />
+            <div class="row">
+              <div>
+                <label>업무구분 *</label>
+                <input type="text" id="task-type" list="task-type-options" required placeholder="예: 보정서 제출" />
+                <datalist id="task-type-options">
+                  <option value="보정서 제출"></option>
+                  <option value="심문기일 출석"></option>
+                  <option value="서류 송달"></option>
+                  <option value="채권자 목록 보정"></option>
+                  <option value="변제계획안 제출"></option>
+                  <option value="보정명령 회신"></option>
+                  <option value="인가결정문 수령"></option>
+                </datalist>
+              </div>
+              <div>
+                <label>수령일 (서류 송달받은 날)</label>
+                <input type="text" class="date-field" id="task-received" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label>마감예정일 *</label>
+                <input type="text" class="date-field" id="task-due" required placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+              </div>
+              <div>
+                <label>상태</label>
+                <select id="task-status">
+                  <option value="예정">예정</option>
+                  <option value="진행중">진행중</option>
+                  <option value="완료">완료</option>
+                </select>
+              </div>
+            </div>
+            <label>담당자</label>
+            <input type="text" id="task-assignee" />
+            <label>메모</label>
+            <input type="text" id="task-memo" />
+            <p id="task-error" class="error-text"></p>
+            <div class="actions-row">
+              <button type="button" id="btn-delete-task" class="btn-danger hidden">삭제</button>
+              <div class="spacer"></div>
+              <button type="button" class="btn-secondary hidden" id="btn-cancel-task">취소</button>
+              <button type="submit" class="btn-primary" id="btn-save-task">추가</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- 수임료 납부일정 (관리자 전용) -->
+      <div class="card" id="fee-card" style="display:none;">
+        <h3>수임료 납부일정</h3>
+
+        <div class="row" style="align-items:flex-end;">
+          <div>
+            <label>총 수임료 (원)</label>
+            <input type="number" id="fee-total" min="0" step="10000" placeholder="예: 3000000" />
+          </div>
+          <div>
+            <label>메모</label>
+            <input type="text" id="fee-memo" placeholder="예: 착수금 포함" />
+          </div>
+          <div style="flex:0 0 auto;">
+            <label>&nbsp;</label>
+            <button type="button" class="btn-secondary" id="btn-save-fee-total">총액 저장</button>
+          </div>
+        </div>
+        <p id="fee-total-error" class="error-text"></p>
+
+        <div class="fee-summary">
+          <div class="item">총 수임료<b id="fee-sum-total">-</b></div>
+          <div class="item">납부완료<b id="fee-sum-paid" style="color:var(--status-good);">-</b></div>
+          <div class="item">미납액<b id="fee-sum-remaining" style="color:var(--status-critical);">-</b></div>
+        </div>
+
+        <table class="fee-table">
+          <thead><tr><th>회차</th><th>금액</th><th>납부예정일</th><th>상태</th><th>납부일</th><th></th></tr></thead>
+          <tbody id="fee-tbody"></tbody>
+        </table>
+        <p id="fee-empty-note" class="empty-note hidden">등록된 납부 회차가 없습니다.</p>
+
+        <div class="mini-form" id="fee-mini-form-wrap">
+          <div class="mini-form-title" id="fee-form-title">새 회차 추가</div>
+          <form id="fee-form">
+            <input type="hidden" id="fee-id" />
+            <div class="row">
+              <div>
+                <label>회차 *</label>
+                <input type="number" id="fee-seq" min="1" step="1" required placeholder="예: 1" />
+              </div>
+              <div>
+                <label>금액 (원) *</label>
+                <input type="number" id="fee-amount" min="0" step="10000" required placeholder="예: 1000000" />
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label>납부예정일</label>
+                <input type="text" class="date-field" id="fee-due" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+              </div>
+              <div>
+                <label>상태</label>
+                <select id="fee-status">
+                  <option value="예정">예정</option>
+                  <option value="완료">완료</option>
+                </select>
+              </div>
+            </div>
+            <div id="fee-paid-date-wrap" class="hidden">
+              <label>납부일</label>
+              <input type="text" class="date-field" id="fee-paid-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+            </div>
+            <label>메모</label>
+            <input type="text" id="fee-installment-memo" />
+            <p id="fee-error" class="error-text"></p>
+            <div class="actions-row">
+              <button type="button" id="btn-delete-fee" class="btn-danger hidden">삭제</button>
+              <div class="spacer"></div>
+              <button type="button" class="btn-secondary hidden" id="btn-cancel-fee">취소</button>
+              <button type="submit" class="btn-primary" id="btn-save-fee">추가</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<script>
+let currentUser = null;
+let currentCase = null;
+let sheetsStatus = { tasksManagedInSheet: false, url: null };
+const caseId = new URLSearchParams(window.location.search).get('id');
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = '/'; throw new Error('로그인이 필요합니다.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
+  return data;
+}
+
+function escapeHTML(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+function formatWon(n) {
+  return `${Number(n || 0).toLocaleString('ko-KR')}원`;
+}
+
+/* ---- 날짜칸: 브라우저/OS 로케일에 상관없이 항상 yyyy-mm-dd로 고정 ---- */
+function isValidDateStr(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+}
+function maskDateInput(el) {
+  el.addEventListener('input', () => {
+    const digits = el.value.replace(/\D/g, '').slice(0, 8);
+    let out = digits;
+    if (digits.length > 4) out = digits.slice(0, 4) + '-' + digits.slice(4);
+    if (digits.length > 6) out = digits.slice(0, 4) + '-' + digits.slice(4, 6) + '-' + digits.slice(6);
+    el.value = out;
+  });
+}
+document.querySelectorAll('input.date-field').forEach(maskDateInput);
+
+/* ---- 사건유형별 현재단계 목록 ----
+   개인회생만 정확한 절차 단계를 알고 있어 우선 반영했습니다. 개인파산/법인회생 등 다른 사건유형의
+   정확한 단계명을 알려주시면 그대로 추가하겠습니다 (그 전까지는 일반적인 기본 단계로 표시됩니다). */
+const STAGE_OPTIONS_BY_CASE_TYPE = {
+  '개인회생': ['접수', '금지명령', '보정', '개시', '집회', '인가'],
+};
+const DEFAULT_STAGE_OPTIONS = ['접수', '진행중', '완료'];
+
+function stageOptionsFor(caseType) {
+  return STAGE_OPTIONS_BY_CASE_TYPE[(caseType || '').trim()] || DEFAULT_STAGE_OPTIONS;
+}
+
+function renderStageSelect(caseType, selected) {
+  const select = document.getElementById('f-stage');
+  const options = stageOptionsFor(caseType);
+  const current = selected !== undefined ? selected : select.value;
+  select.innerHTML = '<option value="">미지정</option>' + options.map((s) => `<option value="${escapeHTML(s)}">${escapeHTML(s)}</option>`).join('');
+  select.value = options.includes(current) ? current : '';
+}
+
+document.getElementById('f-case-type').addEventListener('input', (e) => renderStageSelect(e.target.value));
+
+function updateStageBadge() {
+  const badge = document.getElementById('stage-badge');
+  const stage = document.getElementById('f-stage').value;
+  if (stage) {
+    badge.textContent = stage;
+    badge.classList.remove('empty');
+  } else {
+    badge.textContent = '단계 미지정';
+    badge.classList.add('empty');
+  }
+}
+document.getElementById('f-stage').addEventListener('change', updateStageBadge);
+
+/* ---- 기본정보 로드/저장 ---- */
+
+function fillInfoForm(c) {
+  document.getElementById('detail-name').textContent = c.client_name || '(이름 없음)';
+  document.getElementById('detail-subtitle').textContent =
+    [c.case_type, c.court_case_no].filter(Boolean).join(' · ') || '사건유형·사건번호 미입력';
+  document.getElementById('f-client').value = c.client_name || '';
+  document.getElementById('f-phone').value = c.phone || '';
+  document.getElementById('f-case-type').value = c.case_type || '';
+  document.getElementById('f-intake-date').value = c.intake_date || '';
+  document.getElementById('f-assignee').value = c.assignee_name || '';
+  document.getElementById('f-lawyer').value = c.assigned_lawyer || '';
+  document.getElementById('f-court').value = c.court || '';
+  document.getElementById('f-caseno').value = c.court_case_no || '';
+  document.getElementById('f-memo').value = c.memo || '';
+  renderStageSelect(c.case_type, c.current_stage || '');
+  updateStageBadge();
+}
+
+document.getElementById('info-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById('info-error');
+  const successEl = document.getElementById('info-success');
+  errorEl.textContent = '';
+  successEl.classList.add('hidden');
+
+  const payload = {
+    client_name: document.getElementById('f-client').value.trim(),
+    phone: document.getElementById('f-phone').value.trim(),
+    case_type: document.getElementById('f-case-type').value.trim(),
+    intake_date: document.getElementById('f-intake-date').value,
+    assignee_name: document.getElementById('f-assignee').value.trim(),
+    assigned_lawyer: document.getElementById('f-lawyer').value.trim(),
+    court: document.getElementById('f-court').value.trim(),
+    court_case_no: document.getElementById('f-caseno').value.trim(),
+    current_stage: document.getElementById('f-stage').value,
+    memo: document.getElementById('f-memo').value.trim(),
+  };
+  try {
+    currentCase = await api(`/api/cases/${caseId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    fillInfoForm(currentCase);
+    successEl.classList.remove('hidden');
+    await renderRecentSubmit();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+document.getElementById('btn-delete-case').addEventListener('click', async () => {
+  if (!confirm('이 사건과 관련된 모든 일정·수임료 정보를 삭제할까요? (구글 캘린더에 등록된 일정도 함께 삭제됩니다)')) return;
+  try {
+    await api(`/api/cases/${caseId}`, { method: 'DELETE' });
+    window.location.href = '/cases.html';
+  } catch (err) {
+    document.getElementById('info-error').textContent = err.message;
+  }
+});
+
+/* ---- 최근 제출 요약 ---- */
+async function renderRecentSubmit() {
+  const el = document.getElementById('recent-submit');
+  try {
+    const tasks = await api(`/api/case-tasks?caseId=${caseId}`);
+    const done = tasks.filter((t) => t.status === '완료').sort((a, b) => b.due_date.localeCompare(a.due_date));
+    if (done.length) {
+      el.textContent = `📤 최근 제출: ${done[0].task_type} (${done[0].due_date})`;
+    } else {
+      el.textContent = '📤 최근 제출: 제출 내역 없음';
+    }
+  } catch {
+    el.textContent = '';
+  }
+}
+
+/* ---- 서류·보정 일정 ---- */
+
+function resetTaskForm() {
+  document.getElementById('task-form').reset();
+  document.getElementById('task-id').value = '';
+  document.getElementById('task-status').value = '예정';
+  document.getElementById('task-form-title').textContent = '새 일정 추가';
+  document.getElementById('btn-save-task').textContent = '추가';
+  document.getElementById('btn-delete-task').classList.add('hidden');
+  document.getElementById('btn-cancel-task').classList.add('hidden');
+  document.getElementById('task-error').textContent = '';
+}
+
+async function renderTaskTable() {
+  const tasks = await api(`/api/case-tasks?caseId=${caseId}`);
+  const tbody = document.getElementById('task-tbody');
+  const emptyNote = document.getElementById('task-empty-note');
+  if (!tasks.length) {
+    tbody.innerHTML = '';
+    emptyNote.classList.remove('hidden');
+  } else {
+    emptyNote.classList.add('hidden');
+    tbody.innerHTML = tasks
+      .slice()
+      .sort((a, b) => a.due_date.localeCompare(b.due_date))
+      .map((t) => `
+        <tr>
+          <td>${escapeHTML(t.task_type)}</td>
+          <td>${escapeHTML(t.received_date || '-')}</td>
+          <td>${t.due_date}</td>
+          <td><span class="status-pill ${t.status}">${t.status}</span></td>
+          <td class="actions-cell">
+            ${t.source === 'sheet' ? '' : `<button type="button" class="btn-small" data-edit-task="${t.id}">편집</button>`}
+          </td>
+        </tr>`).join('');
+    tbody.querySelectorAll('[data-edit-task]').forEach((btn) => {
+      btn.addEventListener('click', () => loadTaskIntoForm(tasks.find((t) => String(t.id) === btn.dataset.editTask)));
+    });
+  }
+  await renderRecentSubmit();
+}
+
+function loadTaskIntoForm(task) {
+  document.getElementById('task-id').value = task.id;
+  document.getElementById('task-type').value = task.task_type;
+  document.getElementById('task-received').value = task.received_date || '';
+  document.getElementById('task-due').value = task.due_date;
+  document.getElementById('task-status').value = task.status;
+  document.getElementById('task-assignee').value = task.assignee_name || '';
+  document.getElementById('task-memo').value = task.memo || '';
+  document.getElementById('task-form-title').textContent = '일정 편집';
+  document.getElementById('btn-save-task').textContent = '수정 저장';
+  document.getElementById('btn-delete-task').classList.remove('hidden');
+  document.getElementById('btn-cancel-task').classList.remove('hidden');
+  document.getElementById('task-error').textContent = '';
+}
+
+document.getElementById('task-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById('task-error');
+  errorEl.textContent = '';
+  const taskId = document.getElementById('task-id').value;
+  const payload = {
+    case_id: Number(caseId),
+    task_type: document.getElementById('task-type').value.trim(),
+    received_date: document.getElementById('task-received').value,
+    due_date: document.getElementById('task-due').value,
+    status: document.getElementById('task-status').value,
+    assignee_name: document.getElementById('task-assignee').value.trim(),
+    memo: document.getElementById('task-memo').value.trim(),
+  };
+  try {
+    if (taskId) {
+      await api(`/api/case-tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    } else {
+      await api('/api/case-tasks', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    resetTaskForm();
+    await renderTaskTable();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+document.getElementById('btn-delete-task').addEventListener('click', async () => {
+  const taskId = document.getElementById('task-id').value;
+  if (!taskId) return;
+  if (!confirm('이 일정을 삭제할까요?')) return;
+  await api(`/api/case-tasks/${taskId}`, { method: 'DELETE' });
+  resetTaskForm();
+  await renderTaskTable();
+});
+
+document.getElementById('btn-cancel-task').addEventListener('click', resetTaskForm);
+
+/* ---- 수임료 납부일정 ---- */
+
+function resetFeeForm() {
+  document.getElementById('fee-form').reset();
+  document.getElementById('fee-id').value = '';
+  document.getElementById('fee-status').value = '예정';
+  document.getElementById('fee-paid-date-wrap').classList.add('hidden');
+  document.getElementById('fee-form-title').textContent = '새 회차 추가';
+  document.getElementById('btn-save-fee').textContent = '추가';
+  document.getElementById('btn-delete-fee').classList.add('hidden');
+  document.getElementById('btn-cancel-fee').classList.add('hidden');
+  document.getElementById('fee-error').textContent = '';
+}
+
+document.getElementById('fee-status').addEventListener('change', (e) => {
+  document.getElementById('fee-paid-date-wrap').classList.toggle('hidden', e.target.value !== '완료');
+});
+
+async function renderFeeSection() {
+  const fee = await api(`/api/cases/${caseId}/fee`);
+  document.getElementById('fee-total').value = fee.total_amount || '';
+  document.getElementById('fee-memo').value = fee.memo || '';
+
+  const paidTotal = fee.installments.filter((i) => i.status === '완료').reduce((sum, i) => sum + Number(i.amount || 0), 0);
+  document.getElementById('fee-sum-total').textContent = formatWon(fee.total_amount);
+  document.getElementById('fee-sum-paid').textContent = formatWon(paidTotal);
+  document.getElementById('fee-sum-remaining').textContent = formatWon(Math.max(0, (fee.total_amount || 0) - paidTotal));
+
+  const tbody = document.getElementById('fee-tbody');
+  const emptyNote = document.getElementById('fee-empty-note');
+  if (!fee.installments.length) {
+    tbody.innerHTML = '';
+    emptyNote.classList.remove('hidden');
+  } else {
+    emptyNote.classList.add('hidden');
+    tbody.innerHTML = fee.installments.map((i) => `
+      <tr>
+        <td>${i.seq}회차</td>
+        <td>${formatWon(i.amount)}</td>
+        <td>${escapeHTML(i.due_date || '-')}</td>
+        <td><span class="status-pill ${i.status === '완료' ? '완료' : '예정'}">${i.status}</span></td>
+        <td>${escapeHTML(i.paid_date || '-')}</td>
+        <td class="actions-cell"><button type="button" class="btn-small" data-edit-fee="${i.id}">편집</button></td>
+      </tr>`).join('');
+    tbody.querySelectorAll('[data-edit-fee]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const item = fee.installments.find((i) => String(i.id) === btn.dataset.editFee);
+        if (item) loadFeeIntoForm(item);
+      });
+    });
+  }
+}
+
+function loadFeeIntoForm(item) {
+  document.getElementById('fee-id').value = item.id;
+  document.getElementById('fee-seq').value = item.seq;
+  document.getElementById('fee-amount').value = item.amount;
+  document.getElementById('fee-due').value = item.due_date || '';
+  document.getElementById('fee-status').value = item.status;
+  document.getElementById('fee-paid-date').value = item.paid_date || '';
+  document.getElementById('fee-paid-date-wrap').classList.toggle('hidden', item.status !== '완료');
+  document.getElementById('fee-installment-memo').value = item.memo || '';
+  document.getElementById('fee-form-title').textContent = `${item.seq}회차 편집`;
+  document.getElementById('btn-save-fee').textContent = '수정 저장';
+  document.getElementById('btn-delete-fee').classList.remove('hidden');
+  document.getElementById('btn-cancel-fee').classList.remove('hidden');
+  document.getElementById('fee-error').textContent = '';
+}
+
+document.getElementById('btn-save-fee-total').addEventListener('click', async () => {
+  const errorEl = document.getElementById('fee-total-error');
+  errorEl.textContent = '';
+  try {
+    await api(`/api/cases/${caseId}/fee`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        total_amount: Number(document.getElementById('fee-total').value) || 0,
+        memo: document.getElementById('fee-memo').value.trim(),
+      }),
+    });
+    await renderFeeSection();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+document.getElementById('fee-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById('fee-error');
+  errorEl.textContent = '';
+  const feeId = document.getElementById('fee-id').value;
+  const payload = {
+    seq: Number(document.getElementById('fee-seq').value) || 1,
+    amount: Number(document.getElementById('fee-amount').value) || 0,
+    due_date: document.getElementById('fee-due').value,
+    status: document.getElementById('fee-status').value,
+    paid_date: document.getElementById('fee-paid-date').value,
+    memo: document.getElementById('fee-installment-memo').value.trim(),
+  };
+  try {
+    if (feeId) {
+      await api(`/api/fee-installments/${feeId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    } else {
+      await api(`/api/cases/${caseId}/fee-installments`, { method: 'POST', body: JSON.stringify(payload) });
+    }
+    resetFeeForm();
+    await renderFeeSection();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+document.getElementById('btn-delete-fee').addEventListener('click', async () => {
+  const feeId = document.getElementById('fee-id').value;
+  if (!feeId) return;
+  if (!confirm('이 납부 회차를 삭제할까요?')) return;
+  await api(`/api/fee-installments/${feeId}`, { method: 'DELETE' });
+  resetFeeForm();
+  await renderFeeSection();
+});
+
+document.getElementById('btn-cancel-fee').addEventListener('click', resetFeeForm);
+
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  await api('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/';
+});
+
+async function init() {
+  if (!caseId) {
+    document.getElementById('load-error').textContent = '사건 ID가 없습니다.';
+    document.getElementById('load-error').classList.remove('hidden');
+    return;
+  }
+  try {
+    currentUser = await api('/api/auth/me');
+  } catch {
+    window.location.href = '/';
+    return;
+  }
+  document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+
+  try { sheetsStatus = await api('/api/sheets/status'); } catch {}
+  const notice = document.getElementById('task-sheet-notice');
+  const formWrap = document.getElementById('task-mini-form-wrap');
+  if (sheetsStatus.tasksManagedInSheet) {
+    document.getElementById('task-sheet-link').href = sheetsStatus.url;
+    notice.classList.remove('hidden');
+    formWrap.classList.add('hidden');
+  }
+
+  try {
+    currentCase = await api(`/api/cases/${caseId}`);
+  } catch (err) {
+    document.getElementById('load-error').textContent = err.message;
+    document.getElementById('load-error').classList.remove('hidden');
+    return;
+  }
+
+  document.getElementById('content').classList.remove('hidden');
+  fillInfoForm(currentCase);
+  resetTaskForm();
+
+  const tasks = [renderTaskTable()];
+  if (currentUser.role === 'admin') {
+    document.getElementById('fee-card').style.display = '';
+    resetFeeForm();
+    tasks.push(renderFeeSection());
+  }
+  await Promise.all(tasks);
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
+}
+
+init();
+</script>
+</body>
+</html>

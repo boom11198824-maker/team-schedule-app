@@ -7,7 +7,7 @@
 <link rel="manifest" href="/manifest.json" />
 <link rel="icon" href="/icons/icon-192.png" />
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
-<meta name="theme-color" content="#4f6df5" />
+<meta name="theme-color" content="#14213d" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -20,49 +20,49 @@
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
-  background: #f5f6fa;
-  color: #1f2430;
+  background: #f7f8fa;
+  color: #14213d;
 }
 
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 20px; background: white; border-bottom: 1px solid #e5e7eb;
+  padding: 12px 20px; background: white; border-bottom: 1px solid #e2e6ed;
   position: sticky; top: 0; z-index: 10;
 }
 .topbar-left { display: flex; align-items: center; gap: 12px; }
-.topbar-left h1 { font-size: 18px; margin: 0; }
+.topbar-left h1 { font-size: 18px; margin: 0; color: #14213d; }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
-.user-name { font-size: 14px; color: #374151; font-weight: 600; }
+.user-name { font-size: 14px; color: #4b5a78; font-weight: 600; }
 
 .badge { font-size: 12px; padding: 4px 10px; border-radius: 999px; font-weight: 600; }
 .badge-on { background: #dcfce7; color: #166534; }
-.badge-off { background: #fee2e2; color: #991b1b; }
+.badge-off { background: #fbe4e4; color: #b23a3a; }
 
 main { padding: 20px; max-width: 1100px; margin: 0 auto; }
 #calendar { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
 
 .fab {
   position: fixed; right: 28px; bottom: 28px; padding: 14px 22px; border-radius: 999px;
-  background: #4f6df5; color: white; border: none; font-size: 15px; font-weight: 600;
-  box-shadow: 0 6px 20px rgba(79,109,245,0.4); cursor: pointer;
+  background: #ff6452; color: white; border: none; font-size: 15px; font-weight: 600;
+  box-shadow: 0 6px 20px rgba(255,100,82,0.4); cursor: pointer;
 }
-.fab:hover { background: #3d59e0; }
+.fab:hover { background: #e5503f; }
 
-button.btn-secondary {
-  background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; padding: 8px 14px;
-  border-radius: 8px; font-size: 13px; cursor: pointer;
+button.btn-secondary, a.btn-secondary {
+  background: #eef1f6; color: #4b5a78; border: 1px solid #e2e6ed; padding: 8px 14px;
+  border-radius: 8px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block;
 }
-button.btn-secondary:hover { background: #e5e7eb; }
+button.btn-secondary:hover, a.btn-secondary:hover { background: #e2e6ed; }
 button.btn-primary {
-  background: #4f6df5; color: white; border: none; padding: 10px 18px; border-radius: 8px;
+  background: #ff6452; color: white; border: none; padding: 10px 18px; border-radius: 8px;
   font-size: 14px; font-weight: 600; cursor: pointer;
 }
-button.btn-primary:hover { background: #3d59e0; }
+button.btn-primary:hover { background: #e5503f; }
 button.btn-danger {
-  background: #fee2e2; color: #b91c1c; border: none; padding: 10px 18px; border-radius: 8px;
+  background: #fbe4e4; color: #b23a3a; border: none; padding: 10px 18px; border-radius: 8px;
   font-size: 14px; font-weight: 600; cursor: pointer;
 }
-button.btn-danger:hover { background: #fecaca; }
+button.btn-danger:hover { background: #f7d0d0; }
 
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex;
@@ -74,9 +74,9 @@ button.btn-danger:hover { background: #fecaca; }
   max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.25);
 }
 .modal h2 { margin-top: 0; font-size: 18px; }
-.modal label { display: block; font-size: 13px; margin: 12px 0 4px; color: #374151; }
+.modal label { display: block; font-size: 13px; margin: 12px 0 4px; color: #4b5a78; }
 .modal input, .modal textarea, .modal select {
-  width: 100%; padding: 9px 11px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;
+  width: 100%; padding: 9px 11px; border: 1px solid #d7dce6; border-radius: 8px; font-size: 14px;
   font-family: inherit; background: white;
 }
 .detail-modal { width: 380px; }
@@ -87,9 +87,9 @@ button.btn-danger:hover { background: #fecaca; }
 }
 .detail-title { font-size: 19px; margin: 8px 0 18px; word-break: break-word; }
 .detail-rows { display: flex; flex-direction: column; gap: 14px; }
-.detail-row { display: flex; align-items: flex-start; gap: 12px; font-size: 14px; color: #1f2430; line-height: 1.5; }
+.detail-row { display: flex; align-items: flex-start; gap: 12px; font-size: 14px; color: #14213d; line-height: 1.5; }
 .detail-icon { flex-shrink: 0; font-size: 16px; width: 20px; text-align: center; }
-.legend { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 20px 10px; font-size: 12px; color: #6b7280; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 20px 10px; font-size: 12px; color: #8993a6; }
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
 @media (max-width: 640px) { .legend { padding: 0 12px 10px; font-size: 11px; } }
@@ -102,7 +102,7 @@ button.btn-danger:hover { background: #fecaca; }
 .hidden { display: none !important; }
 
 .emp-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-.emp-table th, .emp-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #f0f0f0; }
+.emp-table th, .emp-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #e2e6ed; }
 .emp-table button { font-size: 12px; padding: 4px 8px; }
 
 .fc-event { cursor: pointer; }
@@ -173,7 +173,7 @@ button.btn-danger:hover { background: #fecaca; }
       <h2 id="detail-title" class="detail-title"></h2>
       <div class="detail-rows">
         <div class="detail-row">
-          <span class="detail-icon">🕒</span>
+          <span class="detail-icon">📅</span>
           <span id="detail-time"></span>
         </div>
         <div class="detail-row" id="detail-assignee-row">
@@ -215,16 +215,14 @@ button.btn-danger:hover { background: #fecaca; }
           <option value="기타">📌 기타</option>
         </select>
 
-        <label class="checkbox-row"><input type="checkbox" id="sch-allday" /> 하루 종일</label>
-
         <div class="row">
           <div>
-            <label>시작</label>
-            <input type="datetime-local" id="sch-start" required />
+            <label>시작일</label>
+            <input type="text" class="date-field" id="sch-start" required placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
           </div>
           <div>
-            <label>종료</label>
-            <input type="datetime-local" id="sch-end" required />
+            <label>종료일</label>
+            <input type="text" class="date-field" id="sch-end" required placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
           </div>
         </div>
 
@@ -296,11 +294,11 @@ let currentUser = null;
 let calendar = null;
 
 const CATEGORY_META = {
-  '업무': { icon: '📋', color: '#4f6df5' },
-  '보정': { icon: '🔄', color: '#f59e0b' },
+  '업무': { icon: '📋', color: '#14213d' },
+  '보정': { icon: '🔄', color: '#d99a06' },
   '상담': { icon: '💬', color: '#8b5cf6' },
   '휴가': { icon: '🌴', color: '#ef4444' },
-  '기타': { icon: '📌', color: '#6b7280' },
+  '기타': { icon: '📌', color: '#8993a6' },
 };
 
 function renderCategoryLegend() {
@@ -311,10 +309,37 @@ function renderCategoryLegend() {
 }
 
 function pad(n) { return String(n).padStart(2, '0'); }
-function toLocalInputValue(date) {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+// 일정은 시/분/초 없이 날짜(yyyy-mm-dd) 단위로만 관리한다.
+// start_at/end_at은 우리 쪽 저장 규칙상 둘 다 '포함(inclusive)' 날짜 — 즉 end_at도 마지막 날 자체를 가리킨다.
+function dateOnly(date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
-function toRFC3339(localValue) { return `${localValue}:00+09:00`; }
+function addDays(dateStr, n) {
+  const [y, m, d] = dateStr.slice(0, 10).split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
+}
+function daysBetween(aStr, bStr) {
+  const a = new Date(aStr + 'T00:00:00Z');
+  const b = new Date(bStr + 'T00:00:00Z');
+  return Math.round((b - a) / 86400000);
+}
+
+/* ---- 날짜칸: 브라우저/OS 로케일에 상관없이 항상 yyyy-mm-dd로 고정 ---- */
+function isValidDateStr(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+}
+function maskDateInput(el) {
+  el.addEventListener('input', () => {
+    const digits = el.value.replace(/\D/g, '').slice(0, 8);
+    let out = digits;
+    if (digits.length > 4) out = digits.slice(0, 4) + '-' + digits.slice(4);
+    if (digits.length > 6) out = digits.slice(0, 4) + '-' + digits.slice(4, 6) + '-' + digits.slice(6);
+    el.value = out;
+  });
+}
+document.querySelectorAll('input.date-field').forEach(maskDateInput);
 
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -370,9 +395,9 @@ function setupCalendar() {
           return {
             id: r.id,
             title: `${meta.icon} ${namePart}${r.title}`,
-            start: r.start_at,
-            end: r.end_at,
-            allDay: !!r.all_day,
+            start: r.start_at.slice(0, 10),
+            end: addDays(r.end_at, 1), // FullCalendar는 종료일을 배타적(exclusive)으로 취급하므로 하루 더해준다
+            allDay: true,
             backgroundColor: meta.color,
             borderColor: meta.color,
             extendedProps: r,
@@ -380,7 +405,12 @@ function setupCalendar() {
         }));
       } catch (err) { failure(err); }
     },
-    select: (info) => openScheduleModal({ start: info.start, end: info.end, allDay: info.allDay }),
+    select: (info) => {
+      const startStr = dateOnly(info.start);
+      const endExclusive = dateOnly(info.end);
+      const endStr = addDays(endExclusive, -1);
+      openScheduleModal({ startStr, endStr: endStr >= startStr ? endStr : startStr });
+    },
     eventClick: (info) => openDetailModal(info.event.extendedProps),
   });
   calendar.render();
@@ -401,7 +431,7 @@ async function refreshGoogleStatus() {
 
 const scheduleModal = document.getElementById('schedule-modal');
 
-function openScheduleModal({ start, end, allDay, existing } = {}) {
+function openScheduleModal({ startStr, endStr, existing } = {}) {
   document.getElementById('schedule-error').textContent = '';
   const form = document.getElementById('schedule-form');
   form.reset();
@@ -412,9 +442,8 @@ function openScheduleModal({ start, end, allDay, existing } = {}) {
     document.getElementById('sch-id').value = existing.id;
     document.getElementById('sch-title').value = existing.title;
     document.getElementById('sch-category').value = existing.category || '업무';
-    document.getElementById('sch-allday').checked = !!existing.all_day;
-    document.getElementById('sch-start').value = toLocalInputValue(new Date(existing.start_at));
-    document.getElementById('sch-end').value = toLocalInputValue(new Date(existing.end_at));
+    document.getElementById('sch-start').value = existing.start_at.slice(0, 10);
+    document.getElementById('sch-end').value = existing.end_at.slice(0, 10);
     document.getElementById('sch-assignee').value = existing.assignee_name || '';
     document.getElementById('sch-location').value = existing.location || '';
     document.getElementById('sch-desc').value = existing.description || '';
@@ -426,11 +455,10 @@ function openScheduleModal({ start, end, allDay, existing } = {}) {
     document.getElementById('schedule-modal-title').textContent = '일정 추가';
     document.getElementById('sch-id').value = '';
     document.getElementById('sch-category').value = '업무';
-    document.getElementById('sch-allday').checked = !!allDay;
-    const s = start || new Date();
-    const e = end && end.getTime() !== s.getTime() ? end : new Date(s.getTime() + 60 * 60 * 1000);
-    document.getElementById('sch-start').value = toLocalInputValue(s);
-    document.getElementById('sch-end').value = toLocalInputValue(e);
+    const s = startStr || dateOnly(new Date());
+    const e = endStr && endStr >= s ? endStr : s;
+    document.getElementById('sch-start').value = s;
+    document.getElementById('sch-end').value = e;
     document.getElementById('sch-assignee').value = currentUser.name;
     Array.from(form.elements).forEach((el) => (el.disabled = false));
   }
@@ -438,8 +466,8 @@ function openScheduleModal({ start, end, allDay, existing } = {}) {
   scheduleModal.classList.remove('hidden');
 }
 
-/* 시작일시를 바꾸면 종료일시가 (기존 소요시간을 유지한 채) 함께 따라가도록 처리
-   — 종료일시가 시작일시보다 과거로 남는 것을 방지 */
+/* 시작일을 바꾸면 종료일이 (기존 기간을 유지한 채) 함께 따라가도록 처리
+   — 종료일이 시작일보다 앞선 날짜로 남는 것을 방지 */
 const schStartInput = document.getElementById('sch-start');
 const schEndInput = document.getElementById('sch-end');
 let prevSchStartValue = null;
@@ -447,23 +475,16 @@ let prevSchStartValue = null;
 function syncPrevStartValue() { prevSchStartValue = schStartInput.value; }
 
 schStartInput.addEventListener('change', () => {
-  const newStart = new Date(schStartInput.value);
-  if (isNaN(newStart.getTime())) { syncPrevStartValue(); return; }
+  if (!isValidDateStr(schStartInput.value)) { syncPrevStartValue(); return; }
+  const newStart = schStartInput.value;
 
-  const oldStart = prevSchStartValue ? new Date(prevSchStartValue) : null;
-  const currentEnd = new Date(schEndInput.value);
-  const DEFAULT_DURATION = 60 * 60 * 1000;
-
-  let duration = DEFAULT_DURATION;
-  if (oldStart && !isNaN(oldStart.getTime()) && !isNaN(currentEnd.getTime())) {
-    const existingDuration = currentEnd.getTime() - oldStart.getTime();
-    if (existingDuration > 0) duration = existingDuration;
+  let spanDays = 0;
+  if (prevSchStartValue && isValidDateStr(prevSchStartValue) && isValidDateStr(schEndInput.value)) {
+    const existingSpan = daysBetween(prevSchStartValue, schEndInput.value);
+    if (existingSpan > 0) spanDays = existingSpan;
   }
 
-  let newEndTime = newStart.getTime() + duration;
-  if (newEndTime < newStart.getTime()) newEndTime = newStart.getTime();
-
-  schEndInput.value = toLocalInputValue(new Date(newEndTime));
+  schEndInput.value = addDays(newStart, spanDays);
   syncPrevStartValue();
 });
 
@@ -472,14 +493,26 @@ document.getElementById('btn-cancel-schedule').addEventListener('click', () => s
 
 document.getElementById('schedule-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const errorEl = document.getElementById('schedule-error');
+  errorEl.textContent = '';
+  const startVal = document.getElementById('sch-start').value;
+  const endVal = document.getElementById('sch-end').value;
+  if (!isValidDateStr(startVal) || !isValidDateStr(endVal)) {
+    errorEl.textContent = '시작일/종료일은 yyyy-mm-dd 형식으로 입력해주세요.';
+    return;
+  }
+  if (endVal < startVal) {
+    errorEl.textContent = '종료일은 시작일보다 빠를 수 없습니다.';
+    return;
+  }
+
   const id = document.getElementById('sch-id').value;
-  const allDay = document.getElementById('sch-allday').checked;
   const payload = {
     title: document.getElementById('sch-title').value.trim(),
     category: document.getElementById('sch-category').value,
-    all_day: allDay,
-    start_at: toRFC3339(document.getElementById('sch-start').value),
-    end_at: toRFC3339(document.getElementById('sch-end').value),
+    all_day: true,
+    start_at: startVal,
+    end_at: endVal,
     assignee_name: document.getElementById('sch-assignee').value.trim(),
     location: document.getElementById('sch-location').value.trim(),
     description: document.getElementById('sch-desc').value.trim(),
@@ -529,29 +562,19 @@ function formatDetailDate(d) {
   const p = toSeoulParts(d);
   return `${p.year}년 ${p.month}월 ${p.day}일 (${WEEKDAY_KO[p.weekday]})`;
 }
-function formatDetailTime(d) {
-  const p = toSeoulParts(d);
-  const period = p.hour < 12 ? '오전' : '오후';
-  const h12 = p.hour % 12 === 0 ? 12 : p.hour % 12;
-  return `${period} ${h12}:${String(p.minute).padStart(2, '0')}`;
-}
 function isSameDay(a, b) {
   const pa = toSeoulParts(a);
   const pb = toSeoulParts(b);
   return pa.year === pb.year && pa.month === pb.month && pa.day === pb.day;
 }
 
+// 모든 일정은 시/분/초 없이 날짜 단위로만 관리하므로 항상 날짜(구간)만 표시한다.
 function formatDetailDateTime(existing) {
   const start = new Date(existing.start_at);
   const end = new Date(existing.end_at);
-  if (existing.all_day) {
-    return isSameDay(start, end)
-      ? `${formatDetailDate(start)} · 하루 종일`
-      : `${formatDetailDate(start)} ~ ${formatDetailDate(end)} · 하루 종일`;
-  }
   return isSameDay(start, end)
-    ? `${formatDetailDate(start)} ${formatDetailTime(start)} – ${formatDetailTime(end)}`
-    : `${formatDetailDate(start)} ${formatDetailTime(start)} ~ ${formatDetailDate(end)} ${formatDetailTime(end)}`;
+    ? formatDetailDate(start)
+    : `${formatDetailDate(start)} ~ ${formatDetailDate(end)}`;
 }
 
 function openDetailModal(existing) {

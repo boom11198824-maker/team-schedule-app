@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>의뢰인 목록 · 사건관리</title>
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta name="theme-color" content="#14213d" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="팀 스케줄" />
+<style>
+:root {
+  --brand-navy:     #14213d;
+  --brand-navy-dark:#0b1626;
+  --brand-coral:    #ff6452;
+  --brand-coral-dark:#e5503f;
+
+  --surface-1:      #f7f8fa;
+  --card-surface:   #ffffff;
+  --text-primary:   #14213d;
+  --text-secondary: #4b5a78;
+  --text-muted:     #8993a6;
+  --gridline:       #e2e6ed;
+  --border:         rgba(20,33,61,0.12);
+
+  --status-good:        #1e8e5a;
+  --status-warning:     #d99a06;
+  --status-serious:     #d9773e;
+  --status-critical:    #d6394a;
+  --status-good-bg:     #e3f5ec;
+  --status-warning-bg:  #fbf0da;
+  --status-serious-bg:  #fbebdd;
+  --status-critical-bg: #fbe4e4;
+  --status-muted-bg:    #eef0f4;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; background: white; border-bottom: 1px solid var(--gridline);
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-left h1 { font-size: 18px; margin: 0; color: var(--brand-navy); }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.user-name { font-size: 14px; color: var(--text-secondary); font-weight: 600; }
+
+button.btn-secondary, a.btn-secondary {
+  background: #eef1f6; color: var(--text-secondary); border: 1px solid var(--gridline); padding: 8px 14px;
+  border-radius: 8px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block;
+}
+button.btn-secondary:hover, a.btn-secondary:hover { background: #e2e6ed; }
+a.btn-secondary.active { background: var(--brand-navy); color: white; border-color: var(--brand-navy); }
+button.btn-primary {
+  background: var(--brand-coral); color: white; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-primary:hover { background: var(--brand-coral-dark); }
+button.btn-small {
+  font-size: 12px; padding: 5px 9px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card-surface); color: var(--text-secondary);
+}
+
+main { max-width: 1000px; margin: 0 auto; padding: 20px; }
+
+.page-title { display: flex; align-items: baseline; gap: 10px; margin: 4px 2px 16px; }
+.page-title h2 { margin: 0; font-size: 20px; }
+.page-title .count { font-size: 13px; color: var(--text-secondary); }
+
+.filter-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+.filter-bar input[type="text"] {
+  flex: 1; font-family: inherit; font-size: 14px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card-surface); color: var(--text-primary);
+}
+
+.empty-note { font-size: 13px; color: var(--text-muted); padding: 24px 4px; text-align: center; }
+.not-connected-note {
+  font-size: 13px; color: var(--text-secondary); background: var(--card-surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 20px; text-align: center; line-height: 1.7;
+}
+
+.table-wrap {
+  background: var(--card-surface); border: 1px solid var(--border); border-radius: 12px;
+  overflow-x: auto; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+table.client-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+table.client-table th {
+  text-align: left; padding: 10px 14px; font-size: 12px; font-weight: 700; color: var(--text-secondary);
+  border-bottom: 1px solid var(--gridline); white-space: nowrap;
+}
+table.client-table td { padding: 11px 14px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
+table.client-table tr:last-child td { border-bottom: none; }
+table.client-table tr.client-row { cursor: pointer; }
+table.client-table tr.client-row:hover td { background: var(--status-muted-bg); }
+table.client-table td.name-cell { font-weight: 700; white-space: nowrap; }
+table.client-table td.muted { color: var(--text-muted); }
+.doc-badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; white-space: nowrap; margin-right: 4px; display: inline-block; }
+.doc-badge.on { background: var(--status-good-bg); color: var(--status-good); }
+.doc-badge.off { background: var(--status-muted-bg); color: var(--text-muted); }
+.activity-text { white-space: nowrap; }
+
+/* ---- modal (사건관리와 동일한 패턴) ---- */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex;
+  align-items: center; justify-content: center; z-index: 100;
+}
+.modal-backdrop.hidden { display: none; }
+.modal {
+  background: white; border-radius: 14px; padding: 28px; width: 460px; max-width: 92vw;
+  max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+}
+.modal h2 { margin-top: 0; font-size: 18px; }
+.modal h3 { font-size: 14px; margin: 18px 0 8px; color: var(--text-secondary); }
+.modal label { display: block; font-size: 13px; margin: 12px 0 4px; color: var(--text-secondary); }
+.modal input, .modal select {
+  width: 100%; padding: 9px 11px; border: 1px solid #d7dce6; border-radius: 8px; font-size: 14px;
+  font-family: inherit; background: white;
+}
+.checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.checkbox-row input { width: auto; }
+.modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 20px; }
+.spacer { flex: 1; }
+.hidden { display: none !important; }
+.error-text { color: #b23a3a; font-size: 13px; margin: 6px 0 0; min-height: 0; }
+
+.task-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+.task-table th, .task-table td { text-align: left; padding: 7px 5px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
+.status-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.status-pill.예정 { background: var(--status-muted-bg); color: var(--text-secondary); }
+.status-pill.진행중 { background: var(--status-warning-bg); color: var(--status-warning); }
+.status-pill.완료 { background: var(--status-good-bg); color: var(--status-good); }
+
+@media (max-width: 640px) {
+  .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .topbar-left h1 { font-size: 16px; }
+  .topbar-right { gap: 6px; }
+  .topbar-right .user-name { display: none; }
+  button.btn-secondary, a.btn-secondary { padding: 7px 10px; font-size: 12px; }
+  main { padding: 12px; }
+  .modal { padding: 20px; width: 100%; border-radius: 14px 14px 0 0; }
+  .modal-backdrop { align-items: flex-end; }
+  .modal-actions { flex-wrap: wrap; }
+  .modal-actions button { flex: 1 1 auto; }
+}
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1>📋 의뢰인 목록</h1>
+    </div>
+    <div class="topbar-right">
+      <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
+      <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
+      <a href="/clients.html" class="btn-secondary active">📋 의뢰인 목록</a>
+      <span id="user-name" class="user-name"></span>
+      <button id="btn-logout" class="btn-secondary">로그아웃</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="not-connected" class="not-connected-note hidden">
+      아직 의뢰인 명단 구글시트가 연결되지 않았습니다.<br />
+      관리자에게 사건관리 화면의 "📋 의뢰인 시트 연결"을 요청해주세요.
+    </div>
+
+    <div id="list-area" class="hidden">
+      <div class="page-title">
+        <h2>의뢰인 목록</h2>
+        <span class="count" id="client-count"></span>
+      </div>
+
+      <div class="filter-bar">
+        <input type="text" id="client-search-input" placeholder="이름 또는 사건번호로 검색 (비워두면 전체 목록)" autocomplete="off" />
+      </div>
+
+      <div class="table-wrap">
+        <table class="client-table">
+          <thead>
+            <tr>
+              <th>이름</th>
+              <th>연락처</th>
+              <th>관할법원</th>
+              <th>사건번호</th>
+              <th>서류 수령</th>
+              <th>현재 현황</th>
+            </tr>
+          </thead>
+          <tbody id="client-tbody"></tbody>
+        </table>
+      </div>
+      <p id="client-empty" class="empty-note hidden">일치하는 의뢰인이 없습니다.</p>
+    </div>
+  </main>
+
+  <!-- 의뢰인 상세 (기본정보는 시트 연동, 읽기 전용 / 인감도장·USB 수령 여부는 앱에서 직접 관리) -->
+  <div id="client-info-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2 id="client-info-title">의뢰인 정보</h2>
+      <p id="client-info-body" style="font-size:14px; line-height:1.8;"></p>
+
+      <h3>서류 수령 현황</h3>
+      <div class="checkbox-row" style="margin-bottom:6px;">
+        <input type="checkbox" id="ci-seal-received" />
+        <label for="ci-seal-received" style="margin:0;">인감도장 수령함</label>
+      </div>
+      <div id="ci-seal-date-wrap" class="hidden">
+        <label>수령일</label>
+        <input type="text" class="date-field" id="ci-seal-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+      </div>
+
+      <div class="checkbox-row" style="margin: 14px 0 6px;">
+        <input type="checkbox" id="ci-cert-received" />
+        <label for="ci-cert-received" style="margin:0;">공동인증서 USB 수령함</label>
+      </div>
+      <div id="ci-cert-date-wrap" class="hidden">
+        <label>수령일</label>
+        <input type="text" class="date-field" id="ci-cert-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+      </div>
+      <p id="ci-docs-error" class="error-text"></p>
+
+      <h3>현재 사건현황 (관련 일정)</h3>
+      <table class="task-table" id="ci-task-table">
+        <thead><tr><th>업무구분</th><th>마감예정일</th><th>상태</th></tr></thead>
+        <tbody id="ci-task-tbody"></tbody>
+      </table>
+      <p id="ci-task-empty" class="empty-note hidden" style="padding:6px 0;">관련 일정이 없습니다.</p>
+
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button type="button" class="btn-secondary" id="btn-close-client-info">닫기</button>
+        <button type="button" class="btn-secondary" id="btn-add-schedule-for-client">+ 일정 추가</button>
+        <button type="button" class="btn-primary" id="btn-save-client-docs">저장</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+let currentUser = null;
+let allClients = [];
+let allTasks = [];
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = '/'; throw new Error('로그인이 필요합니다.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
+  return data;
+}
+
+function escapeHTML(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+/* ---- 날짜칸: 브라우저/OS 로케일에 상관없이 항상 yyyy-mm-dd로 고정 ---- */
+function isValidDateStr(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+}
+function maskDateInput(el) {
+  el.addEventListener('input', () => {
+    const digits = el.value.replace(/\D/g, '').slice(0, 8);
+    let out = digits;
+    if (digits.length > 4) out = digits.slice(0, 4) + '-' + digits.slice(4);
+    if (digits.length > 6) out = digits.slice(0, 4) + '-' + digits.slice(4, 6) + '-' + digits.slice(6);
+    el.value = out;
+  });
+}
+document.querySelectorAll('input.date-field').forEach(maskDateInput);
+
+function computeDDay(dateStr) {
+  const due = new Date(dateStr + 'T00:00:00+09:00');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((due - today) / 86400000);
+}
+
+// 의뢰인 이름으로 관련 일정(allTasks) 중 가장 눈여겨봐야 할 최근 변동내역 한 줄을 요약한다:
+// 미완료 건이 있으면 마감이 가장 임박한 것, 없으면 가장 최근 마감일 기준 완료 건을 보여준다.
+function clientActivitySummary(clientName) {
+  const nameKey = (clientName || '').trim().replace(/\s+/g, '');
+  if (!nameKey) return '<span class="muted">관련 일정 없음</span>';
+  const related = (allTasks || []).filter((t) => (t.client_name || '').trim().replace(/\s+/g, '') === nameKey);
+  if (!related.length) return '<span class="muted">관련 일정 없음</span>';
+
+  const pending = related.filter((t) => t.status !== '완료').sort((a, b) => a.due_date.localeCompare(b.due_date));
+  if (pending.length) {
+    const t = pending[0];
+    const dDay = computeDDay(t.due_date);
+    const dLabel = dDay < 0 ? `D+${Math.abs(dDay)} 초과` : dDay === 0 ? 'D-DAY' : `D-${dDay}`;
+    return `📌 다음: ${escapeHTML(t.task_type)} · ${dLabel} (${t.due_date})`;
+  }
+  const done = related.slice().sort((a, b) => b.due_date.localeCompare(a.due_date));
+  const t = done[0];
+  return `✅ 최근 완료: ${escapeHTML(t.task_type)} (${t.due_date})`;
+}
+
+function clientRowHTML(c) {
+  const docBadges =
+    `<span class="doc-badge ${c.seal_received ? 'on' : 'off'}">🔖 도장${c.seal_received ? '' : ' 미수령'}</span>` +
+    `<span class="doc-badge ${c.cert_usb_received ? 'on' : 'off'}">💾 인증서${c.cert_usb_received ? '' : ' 미수령'}</span>`;
+  return `
+    <tr class="client-row" data-client-id="${escapeHTML(c.id)}">
+      <td class="name-cell">${escapeHTML(c.client_name)}</td>
+      <td class="muted">${escapeHTML(c.phone || '-')}</td>
+      <td class="muted">${escapeHTML(c.court || '-')}</td>
+      <td class="muted">${escapeHTML(c.court_case_no || '-')}</td>
+      <td>${docBadges}</td>
+      <td class="activity-text">${clientActivitySummary(c.client_name)}</td>
+    </tr>`;
+}
+
+function renderClientTable(query) {
+  const tbody = document.getElementById('client-tbody');
+  const emptyNote = document.getElementById('client-empty');
+  const countEl = document.getElementById('client-count');
+  const q = (query || '').trim().toLowerCase();
+  const matches = !q ? allClients.slice() : allClients.filter((c) =>
+    (c.client_name || '').toLowerCase().includes(q) || (c.court_case_no || '').toLowerCase().includes(q)
+  );
+
+  countEl.textContent = q ? `${matches.length}명 검색됨 (전체 ${allClients.length}명)` : `전체 ${allClients.length}명`;
+
+  if (!matches.length) {
+    tbody.innerHTML = '';
+    emptyNote.classList.remove('hidden');
+    return;
+  }
+  emptyNote.classList.add('hidden');
+  tbody.innerHTML = matches.map(clientRowHTML).join('');
+  tbody.querySelectorAll('[data-client-id]').forEach((row) => {
+    row.addEventListener('click', () => {
+      const c = allClients.find((x) => x.id === row.dataset.clientId);
+      if (c) openClientInfoModal(c);
+    });
+  });
+}
+
+document.getElementById('client-search-input').addEventListener('input', (e) => renderClientTable(e.target.value));
+
+/* ---- 의뢰인 상세 (사건현황 + 인감도장/공동인증서 USB 수령 여부) ---- */
+
+let openClientDoc = null;
+
+function openClientInfoModal(c) {
+  openClientDoc = c;
+
+  document.getElementById('client-info-title').textContent = c.client_name || '의뢰인 정보';
+  document.getElementById('client-info-body').innerHTML =
+    (c.court ? `관할: ${escapeHTML(c.court)}<br>` : '') +
+    (c.court_case_no ? `사건번호: ${escapeHTML(c.court_case_no)}<br>` : '') +
+    (c.phone ? `연락처: ${escapeHTML(c.phone)}<br>` : '') +
+    `<span style="color:var(--text-secondary); font-size:12px;">※ 위 기본정보는 연동된 구글시트에서 가져온 것으로, 앱에서 수정할 수 없습니다.</span>`;
+
+  document.getElementById('ci-docs-error').textContent = '';
+  document.getElementById('ci-seal-received').checked = !!c.seal_received;
+  document.getElementById('ci-seal-date').value = c.seal_received_date || '';
+  document.getElementById('ci-seal-date-wrap').classList.toggle('hidden', !c.seal_received);
+  document.getElementById('ci-cert-received').checked = !!c.cert_usb_received;
+  document.getElementById('ci-cert-date').value = c.cert_usb_received_date || '';
+  document.getElementById('ci-cert-date-wrap').classList.toggle('hidden', !c.cert_usb_received);
+
+  const nameKey = (c.client_name || '').trim().replace(/\s+/g, '');
+  const related = (allTasks || []).filter((t) => (t.client_name || '').trim().replace(/\s+/g, '') === nameKey)
+    .sort((a, b) => a.due_date.localeCompare(b.due_date));
+  const tbody = document.getElementById('ci-task-tbody');
+  const emptyNote = document.getElementById('ci-task-empty');
+  if (!related.length) {
+    tbody.innerHTML = '';
+    emptyNote.classList.remove('hidden');
+  } else {
+    emptyNote.classList.add('hidden');
+    tbody.innerHTML = related.map((t) => `
+      <tr>
+        <td>${escapeHTML(t.task_type)}</td>
+        <td>${t.due_date}</td>
+        <td><span class="status-pill ${t.status}">${t.status}</span></td>
+      </tr>`).join('');
+  }
+
+  document.getElementById('client-info-modal').classList.remove('hidden');
+  document.getElementById('btn-add-schedule-for-client').onclick = () => {
+    const params = new URLSearchParams({
+      newSchedule: c.client_name || '',
+      court: c.court || '',
+      caseno: c.court_case_no || '',
+    });
+    window.location.href = '/cases.html?' + params.toString();
+  };
+}
+document.getElementById('btn-close-client-info').addEventListener('click', () => {
+  document.getElementById('client-info-modal').classList.add('hidden');
+});
+
+document.getElementById('ci-seal-received').addEventListener('change', (e) => {
+  document.getElementById('ci-seal-date-wrap').classList.toggle('hidden', !e.target.checked);
+});
+document.getElementById('ci-cert-received').addEventListener('change', (e) => {
+  document.getElementById('ci-cert-date-wrap').classList.toggle('hidden', !e.target.checked);
+});
+
+document.getElementById('btn-save-client-docs').addEventListener('click', async () => {
+  const errorEl = document.getElementById('ci-docs-error');
+  errorEl.textContent = '';
+  if (!openClientDoc) return;
+
+  const sealDate = document.getElementById('ci-seal-date').value;
+  const certDate = document.getElementById('ci-cert-date').value;
+  if (sealDate && !isValidDateStr(sealDate)) { errorEl.textContent = '인감도장 수령일은 yyyy-mm-dd 형식으로 입력해주세요.'; return; }
+  if (certDate && !isValidDateStr(certDate)) { errorEl.textContent = '공동인증서 수령일은 yyyy-mm-dd 형식으로 입력해주세요.'; return; }
+
+  const payload = {
+    client_name: openClientDoc.client_name,
+    court_case_no: openClientDoc.court_case_no || '',
+    seal_received: document.getElementById('ci-seal-received').checked,
+    seal_received_date: document.getElementById('ci-seal-date').value,
+    cert_usb_received: document.getElementById('ci-cert-received').checked,
+    cert_usb_received_date: document.getElementById('ci-cert-date').value,
+  };
+
+  const btn = document.getElementById('btn-save-client-docs');
+  btn.disabled = true;
+  try {
+    const saved = await api('/api/clients/documents', { method: 'POST', body: JSON.stringify(payload) });
+    Object.assign(openClientDoc, saved);
+    const cached = allClients.find((x) => x.id === openClientDoc.id);
+    if (cached) Object.assign(cached, saved);
+    errorEl.style.color = 'var(--status-good)';
+    errorEl.textContent = '✅ 저장되었습니다.';
+    renderClientTable(document.getElementById('client-search-input').value);
+  } catch (err) {
+    errorEl.style.color = '';
+    errorEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  await api('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/';
+});
+
+async function init() {
+  try {
+    currentUser = await api('/api/auth/me');
+  } catch {
+    window.location.href = '/';
+    return;
+  }
+  document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+
+  let sheetsStatus = { clientsConnected: false };
+  try { sheetsStatus = await api('/api/sheets/status'); } catch {}
+
+  if (!sheetsStatus.clientsConnected) {
+    document.getElementById('not-connected').classList.remove('hidden');
+    document.getElementById('list-area').classList.add('hidden');
+    return;
+  }
+  document.getElementById('list-area').classList.remove('hidden');
+
+  [allClients, allTasks] = await Promise.all([
+    api('/api/clients').catch(() => []),
+    api('/api/case-tasks').catch(() => []),
+  ]);
+  renderClientTable('');
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
+}
+
+init();
+</script>
+</body>
+</html>

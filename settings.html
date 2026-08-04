@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>설정 · 사건관리</title>
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta name="theme-color" content="#14213d" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="팀 스케줄" />
+<style>
+:root {
+  --brand-navy:     #14213d;
+  --brand-navy-dark:#0b1626;
+  --brand-coral:    #ff6452;
+  --brand-coral-dark:#e5503f;
+
+  --surface-1:      #f7f8fa;
+  --card-surface:   #ffffff;
+  --text-primary:   #14213d;
+  --text-secondary: #4b5a78;
+  --text-muted:     #8993a6;
+  --gridline:       #e2e6ed;
+  --border:         rgba(20,33,61,0.12);
+
+  --status-good:        #1e8e5a;
+  --status-warning:     #d99a06;
+  --status-good-bg:     #e3f5ec;
+  --status-warning-bg:  #fbf0da;
+  --status-muted-bg:    #eef0f4;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; background: white; border-bottom: 1px solid var(--gridline);
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-left h1 { font-size: 18px; margin: 0; color: var(--brand-navy); }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.user-name { font-size: 14px; color: var(--text-secondary); font-weight: 600; }
+
+button.btn-secondary, a.btn-secondary {
+  background: #eef1f6; color: var(--text-secondary); border: 1px solid var(--gridline); padding: 8px 14px;
+  border-radius: 8px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block;
+}
+button.btn-secondary:hover, a.btn-secondary:hover { background: #e2e6ed; }
+a.btn-secondary.active { background: var(--brand-navy); color: white; border-color: var(--brand-navy); }
+
+main { max-width: 760px; margin: 0 auto; padding: 20px 20px 80px; }
+
+.page-title { margin: 4px 2px 16px; font-size: 20px; }
+
+.card {
+  background: var(--card-surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px; margin-bottom: 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.card h3 { margin: 0 0 4px; font-size: 15px; }
+.card .desc { font-size: 12px; color: var(--text-muted); margin: 0 0 14px; }
+
+.status-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--gridline); }
+.status-row:last-of-type { border-bottom: none; }
+.status-row .label { font-size: 13px; color: var(--text-secondary); }
+.status-row .value { font-size: 13px; font-weight: 600; text-align: right; }
+
+.badge { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+.badge-on { background: var(--status-good-bg); color: var(--status-good); }
+.badge-off { background: var(--status-muted-bg); color: var(--text-muted); }
+
+.empty-note { font-size: 13px; color: var(--text-muted); }
+
+@media (max-width: 640px) {
+  .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .topbar-left h1 { font-size: 16px; }
+  .topbar-right { gap: 6px; }
+  .topbar-right .user-name { display: none; }
+  button.btn-secondary, a.btn-secondary { padding: 7px 10px; font-size: 12px; }
+  main { padding: 12px; }
+  .status-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .status-row .value { text-align: left; }
+}
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1>⚙️ 설정</h1>
+    </div>
+    <div class="topbar-right">
+      <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
+      <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
+      <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
+      <a href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
+      <a href="/settings.html" class="btn-secondary active">⚙️ 설정</a>
+      <span id="user-name" class="user-name"></span>
+      <button id="btn-logout" class="btn-secondary">로그아웃</button>
+    </div>
+  </header>
+
+  <main>
+    <p class="page-title">관리자 설정</p>
+
+    <div class="card">
+      <h3>구글 캘린더 연동</h3>
+      <p class="desc">직원 일정을 구글 캘린더와 동기화합니다.</p>
+      <div class="status-row">
+        <span class="label">연동 상태</span>
+        <span class="value"><span id="g-cal-badge" class="badge badge-off">확인 중...</span></span>
+      </div>
+      <div class="status-row">
+        <span class="label">연동 계정</span>
+        <span class="value" id="g-cal-account">-</span>
+      </div>
+      <a href="/app.html?open=google" class="btn-secondary" style="margin-top:14px; display:inline-block;">팀 스케줄에서 연동 관리 →</a>
+    </div>
+
+    <div class="card">
+      <h3>의뢰인 시트 연결</h3>
+      <p class="desc">구글시트의 의뢰인 명단 탭을 읽기 전용으로 연결합니다. 의뢰인 목록·사건 매칭에 사용됩니다.</p>
+      <div class="status-row">
+        <span class="label">연결 상태</span>
+        <span class="value"><span id="g-clients-badge" class="badge badge-off">확인 중...</span></span>
+      </div>
+      <div class="status-row">
+        <span class="label">연결된 탭</span>
+        <span class="value" id="g-clients-tab">-</span>
+      </div>
+      <a href="/cases.html?open=clientsSheet" class="btn-secondary" style="margin-top:14px; display:inline-block;">사건관리에서 연결 관리 →</a>
+    </div>
+
+    <div class="card">
+      <h3>사건목록 구글시트 내보내기</h3>
+      <p class="desc">앱에 등록된 사건 목록을 구글시트로 내보냅니다.</p>
+      <div class="status-row">
+        <span class="label">내보내기 상태</span>
+        <span class="value"><span id="g-export-badge" class="badge badge-off">확인 중...</span></span>
+      </div>
+      <div class="status-row">
+        <span class="label">마지막 동기화</span>
+        <span class="value" id="g-export-synced">-</span>
+      </div>
+      <a href="/cases.html?open=sheetsExport" class="btn-secondary" style="margin-top:14px; display:inline-block;">사건관리에서 내보내기 →</a>
+    </div>
+
+    <div class="card">
+      <h3>직원 관리</h3>
+      <p class="desc">로그인 계정을 추가/삭제하고 권한(관리자/직원)을 관리합니다.</p>
+      <a href="/app.html?open=employees" class="btn-secondary" style="display:inline-block;">직원 관리 열기 →</a>
+    </div>
+  </main>
+
+<script>
+let currentUser = null;
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = '/'; throw new Error('로그인이 필요합니다.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
+  return data;
+}
+
+function setBadge(el, on, onText, offText) {
+  el.textContent = on ? onText : offText;
+  el.classList.toggle('badge-on', on);
+  el.classList.toggle('badge-off', !on);
+}
+
+async function loadGoogleStatus() {
+  try {
+    const status = await api('/api/google/status');
+    setBadge(document.getElementById('g-cal-badge'), status.connected, '연동됨', '연동 안 됨');
+    document.getElementById('g-cal-account').textContent = status.calendarSummary || '-';
+  } catch {
+    setBadge(document.getElementById('g-cal-badge'), false, '연동됨', '확인 실패');
+  }
+}
+
+async function loadSheetsStatus() {
+  try {
+    const status = await api('/api/sheets/status');
+    setBadge(document.getElementById('g-clients-badge'), status.clientsConnected, '연결됨', '연결 안 됨');
+    document.getElementById('g-clients-tab').textContent = status.clientsTab || '-';
+    setBadge(document.getElementById('g-export-badge'), status.exported, '내보냄', '내보낸 적 없음');
+    document.getElementById('g-export-synced').textContent = status.lastSyncedAt ? status.lastSyncedAt.slice(0, 16).replace('T', ' ') : '-';
+  } catch {
+    setBadge(document.getElementById('g-clients-badge'), false, '연결됨', '확인 실패');
+    setBadge(document.getElementById('g-export-badge'), false, '내보냄', '확인 실패');
+  }
+}
+
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  await api('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/';
+});
+
+async function init() {
+  try {
+    currentUser = await api('/api/auth/me');
+  } catch {
+    window.location.href = '/';
+    return;
+  }
+  if (currentUser.role !== 'admin') {
+    alert('관리자만 접근할 수 있는 페이지입니다.');
+    window.location.href = '/app.html';
+    return;
+  }
+  document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+
+  await Promise.all([loadGoogleStatus(), loadSheetsStatus()]);
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
+}
+
+init();
+</script>
+</body>
+</html>

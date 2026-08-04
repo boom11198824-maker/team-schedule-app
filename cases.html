@@ -272,7 +272,9 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
     </div>
     <div class="topbar-right">
       <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
+      <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
       <a id="btn-client-search" href="/clients.html" class="btn-secondary" style="display:none">📋 의뢰인 목록</a>
+      <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
       <button id="btn-clients-sheet" class="btn-secondary" style="display:none">📋 의뢰인 시트 연결</button>
       <button id="btn-sheets-export" class="btn-secondary" style="display:none">📊 구글시트로 내보내기</button>
       <span id="user-name" class="user-name"></span>
@@ -1109,6 +1111,7 @@ async function init() {
   if (currentUser.role === 'admin') {
     document.getElementById('btn-sheets-export').style.display = 'inline-block';
     document.getElementById('btn-clients-sheet').style.display = 'inline-block';
+    document.getElementById('nav-settings').style.display = 'inline-block';
   }
   await refreshSheetsStatus();
   if (sheetsStatus.clientsConnected) await loadClients();
@@ -1122,6 +1125,14 @@ async function init() {
       court: params.get('court') || '',
       court_case_no: params.get('caseno') || '',
     });
+    history.replaceState(null, '', '/cases.html');
+  }
+  // 설정 페이지에서 "여기서 관리하기" 버튼으로 넘어온 경우 해당 모달을 바로 열어준다.
+  if (params.get('open') === 'clientsSheet' && currentUser.role === 'admin') {
+    document.getElementById('btn-clients-sheet').click();
+    history.replaceState(null, '', '/cases.html');
+  } else if (params.get('open') === 'sheetsExport' && currentUser.role === 'admin') {
+    document.getElementById('btn-sheets-export').click();
     history.replaceState(null, '', '/cases.html');
   }
 }

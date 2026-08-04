@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>상담관리 · 사건관리</title>
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta name="theme-color" content="#14213d" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="팀 스케줄" />
+<style>
+:root {
+  --brand-navy:     #14213d;
+  --brand-navy-dark:#0b1626;
+  --brand-coral:    #ff6452;
+  --brand-coral-dark:#e5503f;
+
+  --surface-1:      #f7f8fa;
+  --card-surface:   #ffffff;
+  --text-primary:   #14213d;
+  --text-secondary: #4b5a78;
+  --text-muted:     #8993a6;
+  --gridline:       #e2e6ed;
+  --border:         rgba(20,33,61,0.12);
+
+  --status-good:        #1e8e5a;
+  --status-warning:     #d99a06;
+  --status-serious:     #d9773e;
+  --status-critical:    #d6394a;
+  --status-good-bg:     #e3f5ec;
+  --status-warning-bg:  #fbf0da;
+  --status-serious-bg:  #fbebdd;
+  --status-critical-bg: #fbe4e4;
+  --status-muted-bg:    #eef0f4;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; background: white; border-bottom: 1px solid var(--gridline);
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-left h1 { font-size: 18px; margin: 0; color: var(--brand-navy); }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.user-name { font-size: 14px; color: var(--text-secondary); font-weight: 600; }
+
+button.btn-secondary, a.btn-secondary {
+  background: #eef1f6; color: var(--text-secondary); border: 1px solid var(--gridline); padding: 8px 14px;
+  border-radius: 8px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block;
+}
+button.btn-secondary:hover, a.btn-secondary:hover { background: #e2e6ed; }
+a.btn-secondary.active { background: var(--brand-navy); color: white; border-color: var(--brand-navy); }
+button.btn-primary {
+  background: var(--brand-coral); color: white; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-primary:hover { background: var(--brand-coral-dark); }
+button.btn-primary:disabled { opacity: 0.6; cursor: default; }
+
+main { max-width: 1000px; margin: 0 auto; padding: 20px 20px 80px; }
+
+.page-title { display: flex; align-items: baseline; gap: 10px; margin: 4px 2px 16px; }
+.page-title h2 { margin: 0; font-size: 20px; }
+.page-title .count { font-size: 13px; color: var(--text-secondary); }
+
+.filter-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.filter-bar input[type="text"] {
+  flex: 1; min-width: 160px; font-family: inherit; font-size: 14px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card-surface); color: var(--text-primary);
+}
+.filter-bar select {
+  font-family: inherit; font-size: 14px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card-surface); color: var(--text-primary);
+}
+
+.empty-note { font-size: 13px; color: var(--text-muted); padding: 24px 4px; text-align: center; }
+
+.table-wrap {
+  background: var(--card-surface); border: 1px solid var(--border); border-radius: 12px;
+  overflow-x: auto; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+table.client-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+table.client-table th {
+  text-align: left; padding: 10px 14px; font-size: 12px; font-weight: 700; color: var(--text-secondary);
+  border-bottom: 1px solid var(--gridline); white-space: nowrap;
+}
+table.client-table td { padding: 11px 14px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
+table.client-table tr:last-child td { border-bottom: none; }
+table.client-table tr.client-row { cursor: pointer; }
+table.client-table tr.client-row:hover td { background: var(--status-muted-bg); }
+table.client-table td.name-cell { font-weight: 700; white-space: nowrap; }
+table.client-table td.muted { color: var(--text-muted); }
+.memo-cell { color: var(--text-secondary); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.status-pill { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.status-pill.상담중 { background: var(--status-warning-bg); color: var(--status-warning); }
+.status-pill.접수전 { background: var(--status-muted-bg); color: var(--text-secondary); }
+.status-pill.사건진행중 { background: var(--status-good-bg); color: var(--status-good); }
+.status-pill.개시결정후 { background: #e3e9fb; color: var(--brand-navy); }
+.status-pill.미지정 { background: var(--status-muted-bg); color: var(--text-muted); }
+
+/* ---- modal ---- */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex;
+  align-items: center; justify-content: center; z-index: 100;
+}
+.modal-backdrop.hidden { display: none; }
+.modal {
+  background: white; border-radius: 14px; padding: 28px; width: 460px; max-width: 92vw;
+  max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+}
+.modal h2 { margin-top: 0; font-size: 18px; }
+.modal label { display: block; font-size: 13px; margin: 12px 0 4px; color: var(--text-secondary); }
+.modal input, .modal select, .modal textarea {
+  width: 100%; padding: 9px 11px; border: 1px solid #d7dce6; border-radius: 8px; font-size: 14px;
+  font-family: inherit; background: white;
+}
+.modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 20px; }
+.spacer { flex: 1; }
+.hidden { display: none !important; }
+.error-text { color: #b23a3a; font-size: 13px; margin: 6px 0 0; min-height: 0; }
+
+@media (max-width: 640px) {
+  .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .topbar-left h1 { font-size: 16px; }
+  .topbar-right { gap: 6px; }
+  .topbar-right .user-name { display: none; }
+  button.btn-secondary, a.btn-secondary { padding: 7px 10px; font-size: 12px; }
+  main { padding: 12px; }
+  .modal { padding: 20px; width: 100%; border-radius: 14px 14px 0 0; }
+  .modal-backdrop { align-items: flex-end; }
+  .modal-actions { flex-wrap: wrap; }
+  .modal-actions button { flex: 1 1 auto; }
+}
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1>🗂️ 상담관리</h1>
+    </div>
+    <div class="topbar-right">
+      <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
+      <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
+      <a href="/consultations.html" class="btn-secondary active">🗂️ 상담관리</a>
+      <a href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
+      <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
+      <span id="user-name" class="user-name"></span>
+      <button id="btn-logout" class="btn-secondary">로그아웃</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="page-title">
+      <h2>상담관리</h2>
+      <span class="count" id="list-count"></span>
+    </div>
+
+    <div class="filter-bar">
+      <input type="text" id="search-input" placeholder="이름으로 검색" autocomplete="off" />
+      <select id="status-filter">
+        <option value="active">진행중인 상담 (상담중·접수전)</option>
+        <option value="상담중">상담중</option>
+        <option value="접수전">접수전</option>
+        <option value="사건진행중">사건진행중 (계약된 의뢰인)</option>
+        <option value="개시결정후">개시결정후</option>
+        <option value="">전체</option>
+      </select>
+      <button type="button" class="btn-primary" id="btn-new-consultation">+ 새 상담 등록</button>
+    </div>
+
+    <div class="table-wrap">
+      <table class="client-table">
+        <thead>
+          <tr>
+            <th>이름</th>
+            <th>연락처</th>
+            <th>담당직원</th>
+            <th>상담일</th>
+            <th>상태</th>
+            <th>메모</th>
+          </tr>
+        </thead>
+        <tbody id="list-tbody"></tbody>
+      </table>
+    </div>
+    <p id="list-empty" class="empty-note hidden">조건에 맞는 상담 기록이 없습니다.</p>
+  </main>
+
+  <div id="new-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>새 상담 등록</h2>
+      <label>의뢰인명 *</label>
+      <input type="text" id="nc-name" required />
+      <label>연락처</label>
+      <input type="text" id="nc-phone" placeholder="010-0000-0000" />
+      <label>담당직원</label>
+      <input type="text" id="nc-assignee" placeholder="예: 진홍" />
+      <label>상담일</label>
+      <input type="text" class="date-field" id="nc-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+      <label>메모</label>
+      <textarea id="nc-memo" rows="3" placeholder="상담 내용 요약, 채무 규모, 문의 경로 등"></textarea>
+      <p id="nc-error" class="error-text"></p>
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button type="button" class="btn-secondary" id="btn-cancel-new">취소</button>
+        <button type="button" class="btn-primary" id="btn-save-new">등록하고 상세보기 →</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+let currentUser = null;
+let allCases = [];
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = '/'; throw new Error('로그인이 필요합니다.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
+  return data;
+}
+
+function escapeHTML(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+/* ---- 날짜칸: 브라우저/OS 로케일에 상관없이 항상 yyyy-mm-dd로 고정 ---- */
+function isValidDateStr(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+}
+function maskDateInput(el) {
+  el.addEventListener('input', () => {
+    const digits = el.value.replace(/\D/g, '').slice(0, 8);
+    let out = digits;
+    if (digits.length > 4) out = digits.slice(0, 4) + '-' + digits.slice(4);
+    if (digits.length > 6) out = digits.slice(0, 4) + '-' + digits.slice(4, 6) + '-' + digits.slice(6);
+    el.value = out;
+  });
+}
+document.querySelectorAll('input.date-field').forEach(maskDateInput);
+
+function todayStr() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function rowHTML(c) {
+  const statusLabel = c.status || '미지정';
+  return `
+    <tr class="client-row" data-id="${c.id}">
+      <td class="name-cell">${escapeHTML(c.client_name)}</td>
+      <td class="muted">${escapeHTML(c.phone || '-')}</td>
+      <td class="muted">${escapeHTML(c.assignee_name || '-')}</td>
+      <td class="muted">${escapeHTML(c.intake_date || '-')}</td>
+      <td><span class="status-pill ${escapeHTML(statusLabel)}">${escapeHTML(statusLabel)}</span></td>
+      <td class="memo-cell">${escapeHTML(c.memo || '')}</td>
+    </tr>`;
+}
+
+function render() {
+  const q = (document.getElementById('search-input').value || '').trim().toLowerCase();
+  const statusFilter = document.getElementById('status-filter').value;
+
+  let filtered = allCases;
+  if (statusFilter === 'active') {
+    filtered = filtered.filter((c) => c.status === '상담중' || c.status === '접수전');
+  } else if (statusFilter) {
+    filtered = filtered.filter((c) => c.status === statusFilter);
+  }
+  if (q) {
+    filtered = filtered.filter((c) => (c.client_name || '').toLowerCase().includes(q));
+  }
+  filtered = filtered.slice().sort((a, b) => b.id - a.id);
+
+  document.getElementById('list-count').textContent = `${filtered.length}건`;
+  const tbody = document.getElementById('list-tbody');
+  const emptyNote = document.getElementById('list-empty');
+  if (!filtered.length) {
+    tbody.innerHTML = '';
+    emptyNote.classList.remove('hidden');
+    return;
+  }
+  emptyNote.classList.add('hidden');
+  tbody.innerHTML = filtered.map(rowHTML).join('');
+  tbody.querySelectorAll('[data-id]').forEach((row) => {
+    row.addEventListener('click', () => {
+      window.location.href = `/case-detail.html?id=${row.dataset.id}`;
+    });
+  });
+}
+
+document.getElementById('search-input').addEventListener('input', render);
+document.getElementById('status-filter').addEventListener('change', render);
+
+/* ---- 새 상담 등록 ---- */
+
+function openNewModal() {
+  document.getElementById('nc-error').textContent = '';
+  document.getElementById('nc-name').value = '';
+  document.getElementById('nc-phone').value = '';
+  document.getElementById('nc-assignee').value = '';
+  document.getElementById('nc-date').value = todayStr();
+  document.getElementById('nc-memo').value = '';
+  document.getElementById('new-modal').classList.remove('hidden');
+  document.getElementById('nc-name').focus();
+}
+document.getElementById('btn-new-consultation').addEventListener('click', openNewModal);
+document.getElementById('btn-cancel-new').addEventListener('click', () => {
+  document.getElementById('new-modal').classList.add('hidden');
+});
+
+document.getElementById('btn-save-new').addEventListener('click', async () => {
+  const errorEl = document.getElementById('nc-error');
+  errorEl.textContent = '';
+  const name = document.getElementById('nc-name').value.trim();
+  if (!name) { errorEl.textContent = '의뢰인명은 필수입니다.'; return; }
+  const date = document.getElementById('nc-date').value;
+  if (date && !isValidDateStr(date)) { errorEl.textContent = '상담일은 yyyy-mm-dd 형식으로 입력해주세요.'; return; }
+
+  const payload = {
+    client_name: name,
+    phone: document.getElementById('nc-phone').value.trim(),
+    assignee_name: document.getElementById('nc-assignee').value.trim(),
+    intake_date: date,
+    memo: document.getElementById('nc-memo').value.trim(),
+    status: '상담중',
+  };
+  const btn = document.getElementById('btn-save-new');
+  btn.disabled = true;
+  try {
+    const created = await api('/api/cases', { method: 'POST', body: JSON.stringify(payload) });
+    window.location.href = `/case-detail.html?id=${created.id}`;
+  } catch (err) {
+    errorEl.textContent = err.message;
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  await api('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/';
+});
+
+async function init() {
+  try {
+    currentUser = await api('/api/auth/me');
+  } catch {
+    window.location.href = '/';
+    return;
+  }
+  document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+  if (currentUser.role === 'admin') {
+    document.getElementById('nav-settings').style.display = 'inline-block';
+  }
+
+  document.getElementById('status-filter').value = 'active';
+  allCases = await api('/api/cases').catch(() => []);
+  render();
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
+}
+
+init();
+</script>
+</body>
+</html>

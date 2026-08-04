@@ -14,6 +14,7 @@ const bcrypt = require('bcryptjs');
 const { google } = require('googleapis');
 const path = require('path');
 const fs = require('fs');
+const multer = require('multer');
 
 /* ------------------------------------------------------------------ */
 /* 데이터베이스                                                        */
@@ -21,6 +22,11 @@ const fs = require('fs');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// 사건(상담/의뢰인)별 첨부 파일 저장 위치. DATA_DIR과 마찬가지로 영구 디스크 아래에 둬서
+// 배포/재시작에도 파일이 사라지지 않도록 한다 (문서는 자산이다 원칙).
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const db = new Sqlite(path.join(DATA_DIR, 'app.db'));
 db.pragma('journal_mode = WAL');
@@ -155,13 +161,40 @@ try {
 }
 
 // 사건상세 페이지용 컬럼: 사건유형(개인회생/개인파산 등), 접수일, 담당변호사, 현재단계
-for (const col of ['case_type TEXT', 'intake_date TEXT', 'assigned_lawyer TEXT', 'current_stage TEXT']) {
+// status: 의뢰인 여정 전체 단계(상담중/접수전/사건진행중/개시결정후) — case_type별 세부 절차인
+// current_stage와는 별개의 축이다. 상담관리 페이지에서 새 상담을 등록하면 status='상담중'으로
+// 시작하고, 같은 레코드(같은 Client ID)의 status만 바뀌므로 계약 전후로 정보를 다시 입력하지 않는다.
+// seal_received 등 서류 수령 여부도 사건(=Client) 레코드에 직접 붙여서, 상담 단계에서 이미 받은
+// 인감도장/USB 정보가 나중에 의뢰인으로 전환돼도 그대로 이어지도록 한다.
+for (const col of [
+  'case_type TEXT', 'intake_date TEXT', 'assigned_lawyer TEXT', 'current_stage TEXT', 'status TEXT',
+  'seal_received INTEGER NOT NULL DEFAULT 0', 'seal_received_date TEXT',
+  'cert_usb_received INTEGER NOT NULL DEFAULT 0', 'cert_usb_received_date TEXT',
+]) {
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
   } catch (err) {
     if (!String(err.message).includes('duplicate column')) throw err;
   }
 }
+
+// 상담레포트 등 사건(=상담/의뢰인)에 첨부하는 문서 파일. 실제 파일은 DATA_DIR(영구 디스크) 아래에
+// 저장하고, 이 테이블에는 메타데이터만 보관한다 (문서는 자산이므로 삭제를 전제로 하지 않는다).
+db.exec(`
+CREATE TABLE IF NOT EXISTS case_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL,
+  category TEXT,
+  original_name TEXT NOT NULL,
+  stored_name TEXT NOT NULL,
+  size INTEGER,
+  uploaded_by INTEGER NOT NULL,
+  uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (case_id) REFERENCES cases(id),
+  FOREIGN KEY (uploaded_by) REFERENCES employees(id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_files_case_id ON case_files(case_id);
+`);
 
 // 수임료: 사건당 총액 1건 + 회차별 분할납부 내역
 db.exec(`
@@ -253,6 +286,38 @@ function requireAdmin(req, res, next) {
     next();
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* 사건 첨부파일 업로드 (상담레포트 등)                                    */
+/* ------------------------------------------------------------------ */
+
+const CASE_FILE_MAX_SIZE = 20 * 1024 * 1024; // 20MB
+const CASE_FILE_ALLOWED_EXT = ['.pdf', '.jpg', '.jpeg', '.png', '.doc', '.docx', '.hwp'];
+
+const caseFileStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = path.join(UPLOADS_DIR, `case-${req.params.id}`);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const stamp = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    cb(null, `${stamp}${ext}`);
+  },
+});
+
+const uploadCaseFile = multer({
+  storage: caseFileStorage,
+  limits: { fileSize: CASE_FILE_MAX_SIZE },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!CASE_FILE_ALLOWED_EXT.includes(ext)) {
+      return cb(new Error('허용되지 않는 파일 형식입니다 (PDF, 이미지, 문서 파일만 업로드할 수 있습니다).'));
+    }
+    cb(null, true);
+  },
+});
 
 /* ------------------------------------------------------------------ */
 /* 구글 캘린더 연동                                                     */
@@ -898,15 +963,15 @@ app.get('/api/cases/:id', requireLogin, (req, res) => {
 });
 
 app.post('/api/cases', requireLogin, (req, res) => {
-  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage } = req.body || {};
+  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status } = req.body || {};
   if (!client_name) return res.status(400).json({ error: '의뢰인명은 필수입니다.' });
 
   const info = db
-    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, created_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       client_name, phone || '', court || '', court_case_no || '', assignee_name || '', memo || '',
-      case_type || '', intake_date || '', assigned_lawyer || '', current_stage || '', req.user.id
+      case_type || '', intake_date || '', assigned_lawyer || '', current_stage || '', status || '', req.user.id
     );
 
   res.status(201).json(db.prepare('SELECT * FROM cases WHERE id = ?').get(info.lastInsertRowid));
@@ -916,7 +981,10 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
   const existing = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
 
-  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage } = req.body || {};
+  const {
+    client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status,
+    seal_received, seal_received_date, cert_usb_received, cert_usb_received_date,
+  } = req.body || {};
   const updated = {
     client_name: client_name ?? existing.client_name,
     phone: phone ?? existing.phone,
@@ -928,11 +996,19 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
     intake_date: intake_date ?? existing.intake_date,
     assigned_lawyer: assigned_lawyer ?? existing.assigned_lawyer,
     current_stage: current_stage ?? existing.current_stage,
+    status: status ?? existing.status,
+    seal_received: seal_received !== undefined ? (seal_received ? 1 : 0) : existing.seal_received,
+    seal_received_date: seal_received_date ?? existing.seal_received_date,
+    cert_usb_received: cert_usb_received !== undefined ? (cert_usb_received ? 1 : 0) : existing.cert_usb_received,
+    cert_usb_received_date: cert_usb_received_date ?? existing.cert_usb_received_date,
   };
-  db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, assigned_lawyer=?, current_stage=? WHERE id = ?`)
+  db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, assigned_lawyer=?, current_stage=?, status=?,
+              seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=? WHERE id = ?`)
     .run(
       updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo,
-      updated.case_type, updated.intake_date, updated.assigned_lawyer, updated.current_stage, existing.id
+      updated.case_type, updated.intake_date, updated.assigned_lawyer, updated.current_stage, updated.status,
+      updated.seal_received, updated.seal_received_date, updated.cert_usb_received, updated.cert_usb_received_date,
+      existing.id
     );
 
   res.json(db.prepare('SELECT * FROM cases WHERE id = ?').get(existing.id));
@@ -949,7 +1025,59 @@ app.delete('/api/cases/:id', requireLogin, async (req, res) => {
   db.prepare('DELETE FROM case_tasks WHERE case_id = ?').run(existing.id);
   db.prepare('DELETE FROM case_fee_installments WHERE case_id = ?').run(existing.id);
   db.prepare('DELETE FROM case_fees WHERE case_id = ?').run(existing.id);
+  db.prepare('DELETE FROM case_files WHERE case_id = ?').run(existing.id);
   db.prepare('DELETE FROM cases WHERE id = ?').run(existing.id);
+
+  const filesDir = path.join(UPLOADS_DIR, `case-${existing.id}`);
+  if (fs.existsSync(filesDir)) fs.rmSync(filesDir, { recursive: true, force: true });
+
+  res.json({ ok: true });
+});
+
+/* ---- /api/cases/:id/files (상담레포트 등 첨부파일) ---- */
+
+app.get('/api/cases/:id/files', requireLogin, (req, res) => {
+  const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+  const files = db.prepare('SELECT * FROM case_files WHERE case_id = ? ORDER BY id DESC').all(req.params.id);
+  res.json(files);
+});
+
+app.post('/api/cases/:id/files', requireLogin, (req, res) => {
+  const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  uploadCaseFile.single('file')(req, res, (err) => {
+    if (err) {
+      const msg = err.code === 'LIMIT_FILE_SIZE' ? '파일 용량은 20MB를 넘을 수 없습니다.' : err.message;
+      return res.status(400).json({ error: msg });
+    }
+    if (!req.file) return res.status(400).json({ error: '업로드할 파일을 선택해주세요.' });
+
+    const info = db
+      .prepare(`INSERT INTO case_files (case_id, category, original_name, stored_name, size, uploaded_by)
+                VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(existing.id, (req.body && req.body.category) || '', req.file.originalname, req.file.filename, req.file.size, req.user.id);
+
+    res.status(201).json(db.prepare('SELECT * FROM case_files WHERE id = ?').get(info.lastInsertRowid));
+  });
+});
+
+app.get('/api/case-files/:fileId/download', requireLogin, (req, res) => {
+  const file = db.prepare('SELECT * FROM case_files WHERE id = ?').get(req.params.fileId);
+  if (!file) return res.status(404).json({ error: '파일을 찾을 수 없습니다.' });
+  const filePath = path.join(UPLOADS_DIR, `case-${file.case_id}`, file.stored_name);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: '파일이 서버에 존재하지 않습니다.' });
+  res.download(filePath, file.original_name);
+});
+
+app.delete('/api/case-files/:fileId', requireAdmin, (req, res) => {
+  const file = db.prepare('SELECT * FROM case_files WHERE id = ?').get(req.params.fileId);
+  if (!file) return res.status(404).json({ error: '파일을 찾을 수 없습니다.' });
+
+  const filePath = path.join(UPLOADS_DIR, `case-${file.case_id}`, file.stored_name);
+  try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (err) { console.error('첨부파일 삭제 실패:', err.message); }
+  db.prepare('DELETE FROM case_files WHERE id = ?').run(file.id);
 
   res.json({ ok: true });
 });
@@ -1352,10 +1480,12 @@ app.post('/api/clients/open-case', requireLogin, (req, res) => {
   const matched = matchCaseByNameAndCaseNo(cases, client_name, court_case_no);
   if (matched) return res.json({ id: matched.id, created: false });
 
+  // 의뢰인 시트(원본)에 이미 올라와 있는 사람은 계약이 성사된 정식 의뢰인이므로
+  // status를 '사건진행중'으로 시작한다 (상담관리에서 새로 등록하는 경우와 구분).
   const info = db
-    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, created_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(client_name, phone || '', court || '', court_case_no || '', '', '', '', '', '', '', req.user.id);
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(client_name, phone || '', court || '', court_case_no || '', '', '', '', '', '', '', '사건진행중', req.user.id);
   res.status(201).json({ id: info.lastInsertRowid, created: true });
 });
 
@@ -1477,6 +1607,16 @@ app.get('/clients.html', (req, res) => {
 app.get('/case-detail.html', (req, res) => {
   if (!req.session || !req.session.userId) return res.redirect('/');
   res.sendFile(path.join(__dirname, 'case-detail.html'));
+});
+
+app.get('/consultations.html', (req, res) => {
+  if (!req.session || !req.session.userId) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'consultations.html'));
+});
+
+app.get('/settings.html', (req, res) => {
+  if (!req.session || !req.session.userId) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'settings.html'));
 });
 
 app.get('/', (req, res) => { res.sendFile(path.join(__dirname, 'index.html')); });

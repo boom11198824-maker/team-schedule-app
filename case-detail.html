@@ -153,7 +153,9 @@ input, select, textarea {
     <div class="topbar-right">
       <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
       <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
+      <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
       <a href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
+      <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
       <span id="user-name" class="user-name"></span>
       <button id="btn-logout" class="btn-secondary">로그아웃</button>
     </div>
@@ -167,6 +169,7 @@ input, select, textarea {
     <div id="content" class="hidden">
       <div class="detail-header">
         <h2 id="detail-name">-</h2>
+        <span id="status-badge" class="stage-badge empty">상태 미지정</span>
         <span id="stage-badge" class="stage-badge empty">단계 미지정</span>
       </div>
       <p class="case-subtitle" id="detail-subtitle"></p>
@@ -224,7 +227,17 @@ input, select, textarea {
               <input type="text" id="f-caseno" placeholder="예: 2026개회12345" />
             </div>
           </div>
-          <label>현재단계</label>
+          <label>진행상태</label>
+          <select id="f-status">
+            <option value="">미지정</option>
+            <option value="상담중">상담중</option>
+            <option value="접수전">접수전</option>
+            <option value="사건진행중">사건진행중</option>
+            <option value="개시결정후">개시결정후</option>
+          </select>
+          <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">※ 상담자가 계약해서 의뢰인이 되면 이 값만 바꿔주면 됩니다 (정보를 다시 입력할 필요 없음).</p>
+
+          <label style="margin-top:12px;">현재단계</label>
           <select id="f-stage"></select>
           <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">※ 사건유형을 입력하면 그에 맞는 단계 목록으로 바뀝니다.</p>
 
@@ -239,6 +252,69 @@ input, select, textarea {
             <button type="submit" class="btn-primary">저장</button>
           </div>
         </form>
+      </div>
+
+      <!-- 서류 수령 현황 -->
+      <div class="card">
+        <h3>서류 수령 현황</h3>
+        <div class="checkbox-row" style="margin-bottom:6px;">
+          <input type="checkbox" id="f-seal-received" />
+          <label for="f-seal-received" style="margin:0;">인감도장 수령함</label>
+        </div>
+        <div id="f-seal-date-wrap" class="hidden">
+          <label>수령일</label>
+          <input type="text" class="date-field" id="f-seal-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+        </div>
+
+        <div class="checkbox-row" style="margin: 14px 0 6px;">
+          <input type="checkbox" id="f-cert-received" />
+          <label for="f-cert-received" style="margin:0;">공동인증서 USB 수령함</label>
+        </div>
+        <div id="f-cert-date-wrap" class="hidden">
+          <label>수령일</label>
+          <input type="text" class="date-field" id="f-cert-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+        </div>
+        <p id="docs-error" class="error-text"></p>
+        <p id="docs-success" class="success-text hidden">✅ 저장되었습니다.</p>
+        <div class="actions-row">
+          <div class="spacer"></div>
+          <button type="button" class="btn-primary" id="btn-save-docs">저장</button>
+        </div>
+      </div>
+
+      <!-- 첨부문서 (상담레포트 등) -->
+      <div class="card">
+        <h3>첨부문서 <span class="sub">상담레포트, 계약서 등 PDF/이미지/문서 파일 (최대 20MB)</span></h3>
+        <table class="task-table">
+          <thead><tr><th>구분</th><th>파일명</th><th>업로드일</th><th></th></tr></thead>
+          <tbody id="files-tbody"></tbody>
+        </table>
+        <p id="files-empty-note" class="empty-note hidden">첨부된 문서가 없습니다.</p>
+
+        <div class="mini-form">
+          <div class="mini-form-title">파일 업로드</div>
+          <div class="row">
+            <div>
+              <label>구분</label>
+              <input type="text" id="file-category" list="file-category-options" placeholder="예: 상담레포트" />
+              <datalist id="file-category-options">
+                <option value="상담레포트"></option>
+                <option value="계약서"></option>
+                <option value="통장사본"></option>
+                <option value="기타"></option>
+              </datalist>
+            </div>
+            <div>
+              <label>파일 선택</label>
+              <input type="file" id="file-input" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.hwp" />
+            </div>
+          </div>
+          <p id="file-error" class="error-text"></p>
+          <div class="actions-row">
+            <div class="spacer"></div>
+            <button type="button" class="btn-primary" id="btn-upload-file">업로드</button>
+          </div>
+        </div>
       </div>
 
       <!-- 서류·보정 일정 -->
@@ -472,9 +548,135 @@ function fillInfoForm(c) {
   document.getElementById('f-court').value = c.court || '';
   document.getElementById('f-caseno').value = c.court_case_no || '';
   document.getElementById('f-memo').value = c.memo || '';
+  document.getElementById('f-status').value = c.status || '';
   renderStageSelect(c.case_type, c.current_stage || '');
   updateStageBadge();
+  updateStatusBadge();
+
+  document.getElementById('f-seal-received').checked = !!c.seal_received;
+  document.getElementById('f-seal-date').value = c.seal_received_date || '';
+  document.getElementById('f-seal-date-wrap').classList.toggle('hidden', !c.seal_received);
+  document.getElementById('f-cert-received').checked = !!c.cert_usb_received;
+  document.getElementById('f-cert-date').value = c.cert_usb_received_date || '';
+  document.getElementById('f-cert-date-wrap').classList.toggle('hidden', !c.cert_usb_received);
 }
+
+function updateStatusBadge() {
+  const badge = document.getElementById('status-badge');
+  const status = document.getElementById('f-status').value;
+  if (status) {
+    badge.textContent = status;
+    badge.classList.remove('empty');
+  } else {
+    badge.textContent = '상태 미지정';
+    badge.classList.add('empty');
+  }
+}
+document.getElementById('f-status').addEventListener('change', updateStatusBadge);
+
+document.getElementById('f-seal-received').addEventListener('change', (e) => {
+  document.getElementById('f-seal-date-wrap').classList.toggle('hidden', !e.target.checked);
+});
+document.getElementById('f-cert-received').addEventListener('change', (e) => {
+  document.getElementById('f-cert-date-wrap').classList.toggle('hidden', !e.target.checked);
+});
+
+document.getElementById('btn-save-docs').addEventListener('click', async () => {
+  const errorEl = document.getElementById('docs-error');
+  const successEl = document.getElementById('docs-success');
+  errorEl.textContent = '';
+  successEl.classList.add('hidden');
+
+  const sealDate = document.getElementById('f-seal-date').value;
+  const certDate = document.getElementById('f-cert-date').value;
+  if (sealDate && !isValidDateStr(sealDate)) { errorEl.textContent = '인감도장 수령일은 yyyy-mm-dd 형식으로 입력해주세요.'; return; }
+  if (certDate && !isValidDateStr(certDate)) { errorEl.textContent = '공동인증서 수령일은 yyyy-mm-dd 형식으로 입력해주세요.'; return; }
+
+  const payload = {
+    seal_received: document.getElementById('f-seal-received').checked,
+    seal_received_date: sealDate,
+    cert_usb_received: document.getElementById('f-cert-received').checked,
+    cert_usb_received_date: certDate,
+  };
+  const btn = document.getElementById('btn-save-docs');
+  btn.disabled = true;
+  try {
+    currentCase = await api(`/api/cases/${caseId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    successEl.classList.remove('hidden');
+  } catch (err) {
+    errorEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* ---- 첨부문서 ---- */
+
+function fileRowHTML(f) {
+  const uploadedDate = (f.uploaded_at || '').slice(0, 10);
+  return `
+    <tr>
+      <td>${escapeHTML(f.category || '기타')}</td>
+      <td>${escapeHTML(f.original_name)}</td>
+      <td class="muted">${escapeHTML(uploadedDate)}</td>
+      <td>
+        <a class="btn-small" href="/api/case-files/${f.id}/download" target="_blank" rel="noopener" style="text-decoration:none; display:inline-block;">다운로드</a>
+        ${currentUser && currentUser.role === 'admin' ? `<button type="button" class="btn-small" data-delete-file="${f.id}">삭제</button>` : ''}
+      </td>
+    </tr>`;
+}
+
+async function renderFiles() {
+  const tbody = document.getElementById('files-tbody');
+  const emptyNote = document.getElementById('files-empty-note');
+  let files = [];
+  try { files = await api(`/api/cases/${caseId}/files`); } catch {}
+  if (!files.length) {
+    tbody.innerHTML = '';
+    emptyNote.classList.remove('hidden');
+    return;
+  }
+  emptyNote.classList.add('hidden');
+  tbody.innerHTML = files.map(fileRowHTML).join('');
+  tbody.querySelectorAll('[data-delete-file]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('이 첨부문서를 삭제할까요?')) return;
+      try {
+        await api(`/api/case-files/${btn.dataset.deleteFile}`, { method: 'DELETE' });
+        await renderFiles();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+}
+
+document.getElementById('btn-upload-file').addEventListener('click', async () => {
+  const errorEl = document.getElementById('file-error');
+  errorEl.textContent = '';
+  const fileInput = document.getElementById('file-input');
+  const file = fileInput.files[0];
+  if (!file) { errorEl.textContent = '업로드할 파일을 선택해주세요.'; return; }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('category', document.getElementById('file-category').value.trim());
+
+  const btn = document.getElementById('btn-upload-file');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/cases/${caseId}/files`, { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || '업로드에 실패했습니다.');
+    fileInput.value = '';
+    document.getElementById('file-category').value = '';
+    await renderFiles();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 document.getElementById('info-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -493,6 +695,7 @@ document.getElementById('info-form').addEventListener('submit', async (e) => {
     court: document.getElementById('f-court').value.trim(),
     court_case_no: document.getElementById('f-caseno').value.trim(),
     current_stage: document.getElementById('f-stage').value,
+    status: document.getElementById('f-status').value,
     memo: document.getElementById('f-memo').value.trim(),
   };
   try {
@@ -767,6 +970,9 @@ async function init() {
     return;
   }
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+  if (currentUser.role === 'admin') {
+    document.getElementById('nav-settings').style.display = 'inline-block';
+  }
 
   try { sheetsStatus = await api('/api/sheets/status'); } catch {}
   const notice = document.getElementById('task-sheet-notice');
@@ -789,7 +995,7 @@ async function init() {
   fillInfoForm(currentCase);
   resetTaskForm();
 
-  const tasks = [renderTaskTable()];
+  const tasks = [renderTaskTable(), renderFiles()];
   if (currentUser.role === 'admin') {
     document.getElementById('fee-card').style.display = '';
     resetFeeForm();

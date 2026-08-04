@@ -1252,9 +1252,16 @@ app.post('/api/admin/clients-sheet', requireAdmin, async (req, res) => {
         code: 'NEEDS_RECONSENT',
       });
     }
+    // 구글 클라우드 프로젝트에서 Sheets API 자체가 비활성화된 경우 (공유 문제와 무관)
+    if (/has not been used in project|it is disabled|SERVICE_DISABLED|accessNotConfigured/i.test(err.message || '')) {
+      return res.status(403).json({
+        error: '구글 클라우드 프로젝트에서 "Google Sheets API"가 비활성화되어 있습니다. 개발자에게 Google Cloud Console에서 Sheets API를 활성화해달라고 요청해주세요. (상세: ' + err.message + ')',
+        code: 'API_DISABLED',
+      });
+    }
     if (err.code === 403 || /permission/i.test(err.message || '')) {
       return res.status(403).json({
-        error: '이 스프레드시트에 대한 접근 권한이 없습니다. 구글 캘린더 연동에 사용 중인 계정과 이 시트를 공유(편집자 권한)해주세요.',
+        error: '이 스프레드시트에 대한 접근 권한이 없습니다. 구글 캘린더 연동에 사용 중인 계정과 이 시트를 공유(편집자 권한)해주세요. (상세: ' + (err.message || '') + ')',
         code: 'NO_ACCESS',
       });
     }

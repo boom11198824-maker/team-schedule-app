@@ -222,6 +222,23 @@ CREATE TABLE IF NOT EXISTS case_fee_installments (
 CREATE INDEX IF NOT EXISTS idx_case_fee_installments_case_id ON case_fee_installments(case_id);
 `);
 
+// 앱 전역 기본값 설정(담당직원/담당변호사 기본값 등) — 단일 행(id=1)만 사용
+db.exec(`
+CREATE TABLE IF NOT EXISTS app_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  default_assignee_name TEXT NOT NULL DEFAULT '',
+  default_lawyer_name TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+db.prepare(
+  `INSERT OR IGNORE INTO app_settings (id, default_assignee_name, default_lawyer_name) VALUES (1, ?, ?)`
+).run('진홍', '정해원 변호사');
+
+function getAppSettings() {
+  return db.prepare('SELECT * FROM app_settings WHERE id = 1').get();
+}
+
 /* ------------------------------------------------------------------ */
 /* 인증 / 권한                                                         */
 /* ------------------------------------------------------------------ */
@@ -1299,6 +1316,29 @@ app.delete('/api/case-tasks/:id', requireLogin, async (req, res) => {
 });
 
 /* ---- /api/sheets (사건목록 내보내기 + 일정_보정관리 구글시트 연동 상태) ---- */
+
+/* ---- /api/settings (담당직원/담당변호사 기본값 등 앱 전역 기본값) ---- */
+
+app.get('/api/settings/defaults', requireLogin, (req, res) => {
+  const s = getAppSettings();
+  res.json({
+    default_assignee_name: (s && s.default_assignee_name) || '',
+    default_lawyer_name: (s && s.default_lawyer_name) || '',
+  });
+});
+
+app.patch('/api/settings/defaults', requireAdmin, (req, res) => {
+  const existing = getAppSettings();
+  const { default_assignee_name, default_lawyer_name } = req.body || {};
+  const updated = {
+    default_assignee_name: default_assignee_name != null ? String(default_assignee_name).trim() : existing.default_assignee_name,
+    default_lawyer_name: default_lawyer_name != null ? String(default_lawyer_name).trim() : existing.default_lawyer_name,
+  };
+  db.prepare(
+    `UPDATE app_settings SET default_assignee_name = ?, default_lawyer_name = ?, updated_at = datetime('now') WHERE id = 1`
+  ).run(updated.default_assignee_name, updated.default_lawyer_name);
+  res.json(getAppSettings());
+});
 
 app.get('/api/sheets/status', requireLogin, (req, res) => {
   const row = getStoredGoogleAuth();

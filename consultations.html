@@ -205,8 +205,7 @@ table.client-table td.muted { color: var(--text-muted); }
       <input type="text" id="nc-name" required />
       <label>연락처</label>
       <input type="text" id="nc-phone" placeholder="010-0000-0000" />
-      <label>담당직원</label>
-      <input type="text" id="nc-assignee" placeholder="예: 진홍" />
+      <p id="nc-defaults-note" class="empty-note" style="text-align:left; padding:8px 0 0; margin:0;"></p>
       <label>상담일</label>
       <input type="text" class="date-field" id="nc-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
       <label>메모</label>
@@ -223,6 +222,7 @@ table.client-table td.muted { color: var(--text-muted); }
 <script>
 let currentUser = null;
 let allCases = [];
+let appSettings = { default_assignee_name: '', default_lawyer_name: '' };
 
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -311,7 +311,8 @@ function openNewModal() {
   document.getElementById('nc-error').textContent = '';
   document.getElementById('nc-name').value = '';
   document.getElementById('nc-phone').value = '';
-  document.getElementById('nc-assignee').value = '';
+  document.getElementById('nc-defaults-note').textContent =
+    `담당직원: ${appSettings.default_assignee_name || '-'} · 담당변호사: ${appSettings.default_lawyer_name || '-'} (설정 페이지에서 변경 가능)`;
   document.getElementById('nc-date').value = todayStr();
   document.getElementById('nc-memo').value = '';
   document.getElementById('new-modal').classList.remove('hidden');
@@ -333,7 +334,8 @@ document.getElementById('btn-save-new').addEventListener('click', async () => {
   const payload = {
     client_name: name,
     phone: document.getElementById('nc-phone').value.trim(),
-    assignee_name: document.getElementById('nc-assignee').value.trim(),
+    assignee_name: appSettings.default_assignee_name || '',
+    assigned_lawyer: appSettings.default_lawyer_name || '',
     intake_date: date,
     memo: document.getElementById('nc-memo').value.trim(),
     status: '상담중',
@@ -365,6 +367,8 @@ async function init() {
   if (currentUser.role === 'admin') {
     document.getElementById('nav-settings').style.display = 'inline-block';
   }
+
+  appSettings = await api('/api/settings/defaults').catch(() => appSettings);
 
   document.getElementById('status-filter').value = 'active';
   allCases = await api('/api/cases').catch(() => []);

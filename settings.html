@@ -153,6 +153,17 @@ main { max-width: 760px; margin: 0 auto; padding: 20px 20px 80px; }
     </div>
 
     <div class="card">
+      <h3>서류·보정 일정 관리 방식</h3>
+      <p class="desc">서류 제출/보정 일정(업무)을 구글시트에서 관리할지, 앱에서 직접 관리할지 정합니다. 앱으로 전환하면 완료 처리·수정·삭제가 앱에서 바로 가능해집니다. 전환 시 시트에 남아있던 일정은 모두 앱으로 옮겨지고, 시트 자체는 지워지지 않습니다.</p>
+      <div class="status-row">
+        <span class="label">현재 방식</span>
+        <span class="value"><span id="tasks-source-badge" class="badge badge-off">확인 중...</span></span>
+      </div>
+      <button type="button" id="btn-switch-tasks-to-app" class="btn-secondary hidden" style="margin-top:14px;">앱으로 전환하기</button>
+      <p id="tasks-source-msg" style="font-size:13px; margin:10px 0 0; min-height:0;"></p>
+    </div>
+
+    <div class="card">
       <h3>사건목록 구글시트 내보내기</h3>
       <p class="desc">앱에 등록된 사건 목록을 구글시트로 내보냅니다.</p>
       <div class="status-row">
@@ -233,11 +244,67 @@ async function loadSheetsStatus() {
     document.getElementById('g-clients-tab').textContent = status.clientsTab || '-';
     setBadge(document.getElementById('g-export-badge'), status.exported, '내보냄', '내보낸 적 없음');
     document.getElementById('g-export-synced').textContent = status.lastSyncedAt ? status.lastSyncedAt.slice(0, 16).replace('T', ' ') : '-';
+
+    const badge = document.getElementById('tasks-source-badge');
+    const btn = document.getElementById('btn-switch-tasks-to-app');
+    if (status.tasksManagedInSheet) {
+      badge.textContent = '구글시트에서 관리 중';
+      badge.classList.remove('badge-on');
+      badge.classList.add('badge-off');
+      btn.classList.remove('hidden');
+    } else {
+      badge.textContent = '앱에서 관리 중';
+      badge.classList.remove('badge-off');
+      badge.classList.add('badge-on');
+      btn.classList.add('hidden');
+    }
   } catch {
     setBadge(document.getElementById('g-clients-badge'), false, '연결됨', '확인 실패');
     setBadge(document.getElementById('g-export-badge'), false, '내보냄', '확인 실패');
   }
 }
+
+// 네이티브 confirm()은 일부 환경에서 문제가 될 수 있어, 버튼을 두 번 눌러야 실행되는
+// 방식으로 안전장치를 둔다 (첫 클릭에 "정말요?"로 문구가 바뀌고, 3초 안에 다시 누르면 실행).
+let switchArmed = false;
+let switchArmedTimer = null;
+document.getElementById('btn-switch-tasks-to-app').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const msgEl = document.getElementById('tasks-source-msg');
+
+  if (!switchArmed) {
+    switchArmed = true;
+    btn.textContent = '정말 전환할까요? (다시 클릭하면 실행)';
+    msgEl.textContent = '';
+    clearTimeout(switchArmedTimer);
+    switchArmedTimer = setTimeout(() => {
+      switchArmed = false;
+      btn.textContent = '앱으로 전환하기';
+    }, 4000);
+    return;
+  }
+
+  clearTimeout(switchArmedTimer);
+  switchArmed = false;
+  btn.textContent = '전환 중...';
+  btn.disabled = true;
+  msgEl.textContent = '';
+  try {
+    const result = await api('/api/admin/tasks-source/switch-to-app', { method: 'POST' });
+    msgEl.style.color = 'var(--status-good)';
+    msgEl.textContent = result.alreadyApp
+      ? '이미 앱에서 관리 중입니다.'
+      : `전환 완료: 일정 ${result.migrated}건을 앱으로 옮겼습니다${result.createdCases ? ` (사건 ${result.createdCases}건 새로 생성)` : ''}.`;
+    btn.textContent = '앱으로 전환하기';
+    await loadSheetsStatus();
+  } catch (err) {
+    msgEl.style.color = '#b23a3a';
+    msgEl.textContent = err.message || '전환에 실패했습니다.';
+    btn.textContent = '앱으로 전환하기';
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 document.getElementById('btn-logout').addEventListener('click', async () => {
   await api('/api/auth/logout', { method: 'POST' });

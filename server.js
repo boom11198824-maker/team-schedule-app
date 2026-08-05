@@ -749,6 +749,42 @@ async function readTasksFromSheetIfConnected() {
   return tasks;
 }
 
+// [일정_보정관리] 탭을 원본으로 쓰던 것을 앱(SQLite case_tasks)으로 전환한다.
+// 시트에 남아있는 모든 행을 case_tasks로 옮기고(사건이 없으면 새로 만듦), 이후로는
+// tasks_source를 'app'으로 바꿔 GET /api/case-tasks가 SQLite만 보게 한다.
+// 시트 자체는 지우지 않는다 (기록 보존 — "데이터는 절대 잃지 않는다").
+async function migrateSheetTasksToApp(adminUserId) {
+  const sheetTasks = await readTasksFromSheetIfConnected();
+  if (!sheetTasks) {
+    return { migrated: 0, createdCases: 0, alreadyApp: true };
+  }
+
+  const realCases = db.prepare('SELECT * FROM cases').all().map((c) => Object.assign({ _sortKey: c.id }, c));
+  let migrated = 0;
+  let createdCases = 0;
+
+  for (const t of sheetTasks) {
+    let matchedCase = matchCaseByNameAndCaseNo(realCases, t.client_name, t.court_case_no);
+    if (!matchedCase) {
+      const info = db
+        .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
+                  VALUES (?, '', ?, ?, ?, '', '', '', '', '', '사건진행중', ?)`)
+        .run(t.client_name, t.court || '', t.court_case_no || '', t.assignee_name || '', adminUserId);
+      matchedCase = { id: info.lastInsertRowid, client_name: t.client_name, _sortKey: info.lastInsertRowid };
+      realCases.push(matchedCase);
+      createdCases++;
+    }
+
+    db.prepare(`INSERT INTO case_tasks (case_id, task_type, received_date, due_date, status, assignee_name, memo, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(matchedCase.id, t.task_type, t.received_date || '', t.due_date, t.status, t.assignee_name || '', t.memo || '', adminUserId);
+    migrated++;
+  }
+
+  db.prepare("UPDATE google_auth SET tasks_source = 'app' WHERE id = 1").run();
+  return { migrated, createdCases, alreadyApp: false };
+}
+
 /* ------------------------------------------------------------------ */
 /* Express 앱                                                          */
 /* ------------------------------------------------------------------ */
@@ -1340,6 +1376,19 @@ app.patch('/api/settings/defaults', requireAdmin, (req, res) => {
   res.json(getAppSettings());
 });
 
+// 보정 업무(서류/일정) 원본을 구글시트 -> 앱(SQLite)으로 전환한다.
+// 시트에 남아있던 미완료/완료 일정을 모두 case_tasks로 옮기고, 이후로는 앱에서
+// 생성/수정/완료 처리가 전부 즉시 반영된다. 시트 자체는 건드리지 않는다(참고용으로 남음).
+app.post('/api/admin/tasks-source/switch-to-app', requireAdmin, async (req, res) => {
+  try {
+    const result = await migrateSheetTasksToApp(req.user.id);
+    res.json(result);
+  } catch (err) {
+    console.error('보정 업무 앱 전환 실패:', err.message);
+    res.status(500).json({ error: '전환 중 오류가 발생했습니다: ' + err.message });
+  }
+});
+
 app.get('/api/sheets/status', requireLogin, (req, res) => {
   const row = getStoredGoogleAuth();
   const spreadsheetId = row && row.sheets_spreadsheet_id;
@@ -1529,7 +1578,10 @@ app.post('/api/clients/open-case', requireLogin, (req, res) => {
   res.status(201).json({ id: info.lastInsertRowid, created: true });
 });
 
-// addSchedule() 역할: 선택한 의뢰인 정보 + 할 일 + 마감일을 [일정_보정관리] 탭 맨 아래에 추가한다.
+// addSchedule() 역할: 선택한 의뢰인 정보 + 할 일 + 마감일을 등록한다.
+// tasks_source가 'sheet'이면 예전처럼 [일정_보정관리] 탭 맨 아래에 행을 추가하고,
+// 'app'(전환 후)이면 사건을 찾거나 새로 만든 뒤 case_tasks에 바로 저장한다.
+// (의뢰인 자동완성은 여전히 연동된 의뢰인 명단 시트를 쓰므로 clients_sheet_tab 요구사항은 그대로 유지)
 app.post('/api/clients/schedule', requireLogin, async (req, res) => {
   const { client_name, court_case_no, task_type, due_date, received_date, assignee_name, memo } = req.body || {};
   if (!client_name || !task_type || !due_date) {
@@ -1539,6 +1591,32 @@ app.post('/api/clients/schedule', requireLogin, async (req, res) => {
   const authRow = getStoredGoogleAuth();
   if (!authRow || !authRow.sheets_spreadsheet_id || !authRow.clients_sheet_tab) {
     return res.status(400).json({ error: '의뢰인 시트가 아직 연동되어 있지 않습니다.', code: 'NOT_CONNECTED' });
+  }
+
+  if (authRow.tasks_source !== 'sheet') {
+    // 앱(SQLite)이 원본: 사건을 찾거나 새로 만들고 case_tasks에 바로 저장한다.
+    const cases = db.prepare('SELECT * FROM cases').all().map((c) => Object.assign({ _sortKey: c.id }, c));
+    let matchedCase = matchCaseByNameAndCaseNo(cases, client_name, court_case_no);
+    if (!matchedCase) {
+      const info = db
+        .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
+                  VALUES (?, '', '', ?, ?, '', '', '', '', '', '사건진행중', ?)`)
+        .run(client_name, court_case_no || '', assignee_name || '', req.user.id);
+      matchedCase = { id: info.lastInsertRowid };
+    }
+
+    const taskInfo = db
+      .prepare(`INSERT INTO case_tasks (case_id, task_type, received_date, due_date, status, assignee_name, memo, created_by)
+                VALUES (?, ?, ?, ?, '예정', ?, ?, ?)`)
+      .run(matchedCase.id, task_type, received_date || '', due_date, assignee_name || (req.user && req.user.name) || '', memo || '', req.user.id);
+
+    const task = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(taskInfo.lastInsertRowid);
+    try {
+      const googleEventId = await googleCreateEvent(caseTaskToGoogleEvent(task));
+      if (googleEventId) db.prepare('UPDATE case_tasks SET google_event_id = ? WHERE id = ?').run(googleEventId, task.id);
+    } catch (err) { console.error('구글 캘린더 등록 실패:', err.message); }
+
+    return res.status(201).json({ ok: true, id: task.id });
   }
 
   try {

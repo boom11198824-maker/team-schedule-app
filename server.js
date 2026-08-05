@@ -1654,6 +1654,91 @@ app.get('/api/admin/fee-migration-preview', requireAdmin, async (req, res) => {
   }
 });
 
+// 실제로 이식을 실행한다 (진홍 님 확인 후 1회성으로 사용).
+// - 사건이 없는 의뢰인은 의뢰인 명단(이름/전화/법원/사건번호)으로 사건을 자동 생성한다.
+// - 회차는 "예정"(아직 납부 안 된 미래 일정)만 이식한다 — 이미 완료된 과거(2024년 등) 회차는 건너뛴다.
+// - 결제방식은 메모에 "결제방식: OOO"로 같이 적는다.
+// - 다시 실행해도 안전하도록(idempotent), 이미 그 case_id + seq 조합의 회차가 있으면 건드리지 않고 건너뛴다.
+app.post('/api/admin/fee-migration-run', requireAdmin, async (req, res) => {
+  try {
+    const client = await getSheetsAuthorizedClient();
+    if (!client) return res.status(400).json({ error: '구글 계정이 연동되어 있지 않습니다.' });
+    const sheets = google.sheets({ version: 'v4', auth: client });
+    const result = await sheets.spreadsheets.values.get({
+      spreadsheetId: FEE_MIGRATION_SPREADSHEET_ID,
+      range: 'A1:AR200',
+    });
+    const rows = result.data.values || [];
+    let sheetClients = parseFeeSheetRows(rows);
+    const limit = parseInt(req.query.limit, 10);
+    if (Number.isFinite(limit) && limit > 0) sheetClients = sheetClients.slice(0, limit);
+
+    const rosterCandidates = await getMatchCandidates();
+
+    let casesCreated = 0;
+    let installmentsInserted = 0;
+    let installmentsSkippedExisting = 0;
+    let installmentsSkippedPaid = 0;
+    const problems = [];
+
+    sheetClients.forEach((c) => {
+      // 매번 최신 사건 목록으로 다시 매칭 (직전 클라이언트 처리에서 방금 만든 사건도 반영되도록)
+      const existingCases = db.prepare('SELECT * FROM cases').all().map((r) => Object.assign({ _sortKey: r.id }, r));
+      let matchedCase = matchCaseByNameAndCaseNo(existingCases, c.name, '');
+
+      if (!matchedCase) {
+        const rosterMatch = matchCaseByNameAndCaseNo(rosterCandidates, c.name, '');
+        if (!rosterMatch) {
+          problems.push(`${c.name}: 의뢰인 명단에서도 찾을 수 없어 건너뜀`);
+          return;
+        }
+        const info = db
+          .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
+                    VALUES (?, ?, ?, ?, '', '', '', ?, '', '', '사건진행중', ?)`)
+          .run(c.name, rosterMatch.phone || '', rosterMatch.court || '', rosterMatch.court_case_no || '', c.engagementDate || '', req.user.id);
+        matchedCase = { id: info.lastInsertRowid };
+        casesCreated++;
+      }
+
+      // 수임료 총액: 이 사건에 아직 case_fees가 없을 때만 시트 값으로 채운다 (기존 수기 입력을 덮어쓰지 않음).
+      const hasFee = db.prepare('SELECT case_id FROM case_fees WHERE case_id = ?').get(matchedCase.id);
+      if (!hasFee && c.totalFee) {
+        db.prepare(`INSERT INTO case_fees (case_id, total_amount, memo, updated_at) VALUES (?, ?, '', datetime('now'))`)
+          .run(matchedCase.id, c.totalFee);
+      }
+
+      c.installments.forEach((ins) => {
+        if (ins.status !== '예정') { installmentsSkippedPaid++; return; }
+        const already = db.prepare('SELECT id FROM case_fee_installments WHERE case_id = ? AND seq = ?').get(matchedCase.id, ins.seq);
+        if (already) { installmentsSkippedExisting++; return; }
+
+        const info = db.prepare(`
+          INSERT INTO case_fee_installments (case_id, seq, amount, due_date, status, paid_date, memo)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(matchedCase.id, ins.seq, ins.amount, ins.due_date, ins.status, ins.paid_date, ins.memo);
+
+        const installment = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(info.lastInsertRowid);
+        try {
+          syncFeeInstallmentSchedule(installment, req.user.id);
+        } catch (err) {
+          console.error('수임료 이식 중 팀 스케줄 동기화 실패:', err.message);
+        }
+        installmentsInserted++;
+      });
+    });
+
+    res.json({
+      casesCreated,
+      installmentsInserted,
+      installmentsSkippedExisting,
+      installmentsSkippedPaid,
+      problems,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/sheets/status', requireLogin, (req, res) => {
   const row = getStoredGoogleAuth();
   const spreadsheetId = row && row.sheets_spreadsheet_id;

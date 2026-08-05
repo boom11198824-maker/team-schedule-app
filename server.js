@@ -1604,18 +1604,30 @@ app.get('/api/admin/fee-migration-preview', requireAdmin, async (req, res) => {
     const rows = result.data.values || [];
     const clients = parseFeeSheetRows(rows);
 
-    const cases = db.prepare('SELECT * FROM cases').all().map((c) => Object.assign({ _sortKey: c.id }, c));
-    const matched = [];
-    const unmatchedNames = [];
+    // 매칭은 앱 SQLite cases가 아니라 "의뢰인 명단"(법진 사건관리 시트, 연동돼 있으면 그쪽이 진짜 원본)
+    // 기준으로 한다 - /api/clients/open-case와 동일한 방식. 앱에는 아직 사건으로 "열어보지" 않은
+    // 의뢰인이 많을 뿐, 실제로는 의뢰인 명단에 이미 다 있는 경우가 대부분이기 때문.
+    const rosterCandidates = await getMatchCandidates();
+    const existingCases = db.prepare('SELECT * FROM cases').all().map((c) => Object.assign({ _sortKey: c.id }, c));
+
+    const inRosterWithCase = []; // 의뢰인 명단에도 있고, 앱에 사건도 이미 만들어져 있음
+    const inRosterNoCase = []; // 의뢰인 명단에는 있는데, 앱에는 아직 사건이 안 만들어짐 (자동 생성 필요)
+    const notInRoster = []; // 의뢰인 명단에서도 못 찾은 이름 (시트 표기 차이 등 확인 필요)
     let totalInstallments = 0;
     let paidCount = 0;
     let upcomingCount = 0;
     let dateParseFailures = 0;
 
     clients.forEach((c) => {
-      const m = matchCaseByNameAndCaseNo(cases, c.name, '');
-      if (m) matched.push({ name: c.name, caseId: m.id });
-      else unmatchedNames.push(c.name);
+      const rosterMatch = matchCaseByNameAndCaseNo(rosterCandidates, c.name, '');
+      const caseMatch = matchCaseByNameAndCaseNo(existingCases, c.name, '');
+      if (caseMatch) {
+        inRosterWithCase.push({ name: c.name, caseId: caseMatch.id });
+      } else if (rosterMatch) {
+        inRosterNoCase.push({ name: c.name, court: rosterMatch.court || '', court_case_no: rosterMatch.court_case_no || '' });
+      } else {
+        notInRoster.push(c.name);
+      }
       if (c.engagementDateRaw && !c.engagementDate) dateParseFailures++;
       c.installments.forEach((ins) => {
         totalInstallments++;
@@ -1625,10 +1637,12 @@ app.get('/api/admin/fee-migration-preview', requireAdmin, async (req, res) => {
 
     res.json({
       totalClients: clients.length,
-      matchedCount: matched.length,
-      unmatchedCount: unmatchedNames.length,
-      unmatchedNames,
-      matched,
+      rosterConnected: !!(getStoredGoogleAuth() && getStoredGoogleAuth().clients_sheet_tab),
+      alreadyHasCaseCount: inRosterWithCase.length,
+      willAutoCreateCount: inRosterNoCase.length,
+      notInRosterCount: notInRoster.length,
+      notInRosterNames: notInRoster,
+      willAutoCreateSample: inRosterNoCase.slice(0, 10),
       totalInstallments,
       paidCount,
       upcomingCount,

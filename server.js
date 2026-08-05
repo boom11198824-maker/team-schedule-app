@@ -1515,6 +1515,131 @@ app.get('/api/admin/sheet-raw', requireAdmin, async (req, res) => {
   }
 });
 
+// ---- 수임료 납부일정 시트 → 앱 이식(migration) 전용 유틸리티 (일회성) ----
+// "법진 수임료 관리" 구글시트 구조:
+//   A=순번, B=이름, C=전화번호, D=수임일자, E=수임료(총액)
+//   F~ : 1~4회차는 각 8칸(예정납부일/예정납부금액/실제납부일/실제납부액/납부여부/문자발송여부/문자발송날짜/결제방식),
+//        5회차만 5칸(예정납부일/예정납부금액/실제납부일/실제납부액/문자발송날짜 — 납부여부/문자발송여부/결제방식 없음)
+//   마지막 열 = 완납여부(전체 요약, 회차 데이터 아님)
+const FEE_MIGRATION_SPREADSHEET_ID = '1b5ox11BcCbnrjZQjRNx6RcWz6hMJQUN1nec3VuYKnDQ';
+
+// 시트의 날짜는 "2024-10- 21" / "2024. 10. 21" / "2025. 1. 5" 등 표기가 제각각이라
+// 숫자 3덩어리(년/월/일)만 뽑아 yyyy-mm-dd로 통일한다.
+function parseFeeSheetDate(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+  const m = s.match(/(\d{4})\s*[.\-\/]\s*(\d{1,2})\s*[.\-\/]\s*(\d{1,2})/);
+  if (!m) return '';
+  const [, y, mo, d] = m;
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+// "₩500,000" / "500000" 등을 숫자(원)로 통일한다.
+function parseFeeSheetAmount(raw) {
+  const s = String(raw == null ? '' : raw).replace(/[₩,\s]/g, '');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// 시트 원본 rows(헤더 2줄 포함)를 의뢰인별 구조로 파싱한다.
+function parseFeeSheetRows(rows) {
+  const clients = [];
+  for (let r = 2; r < rows.length; r++) {
+    const row = rows[r] || [];
+    const name = String(row[1] || '').trim();
+    if (!name) continue;
+
+    const client = {
+      sheetRow: r + 1,
+      name,
+      phone: String(row[2] || '').trim(),
+      engagementDateRaw: row[3] || '',
+      engagementDate: parseFeeSheetDate(row[3]),
+      totalFee: parseFeeSheetAmount(row[4]),
+      fullyPaidFlag: String(row[42] || '').includes('완납'),
+      installments: [],
+    };
+
+    for (let i = 0; i < 5; i++) {
+      const base = i < 4 ? 5 + i * 8 : 37;
+      const due = parseFeeSheetDate(row[base]);
+      const amount = parseFeeSheetAmount(row[base + 1]);
+      const paidDate = parseFeeSheetDate(row[base + 2]);
+      const paidAmount = parseFeeSheetAmount(row[base + 3]);
+      let paidFlagRaw = '';
+      let method = '';
+      if (i < 4) {
+        paidFlagRaw = String(row[base + 4] || '');
+        method = String(row[base + 7] || '').trim();
+      }
+      if (!due && !amount && !paidDate && !paidAmount) continue; // 이 회차는 데이터 없음(건너뜀)
+
+      const isPaid = i < 4 ? paidFlagRaw.includes('납부') : !!(paidDate || paidAmount);
+      client.installments.push({
+        seq: i + 1,
+        due_date: due,
+        amount: amount || paidAmount,
+        status: isPaid ? '완료' : '예정',
+        paid_date: isPaid ? (paidDate || due) : '',
+        memo: method ? `결제방식: ${method}` : '',
+      });
+    }
+
+    clients.push(client);
+  }
+  return clients;
+}
+
+// 실제로 아무것도 쓰지 않고, 시트를 파싱해서 "앱에 이식하면 어떻게 되는지" 요약만 보여준다.
+// (사건과 이름이 매칭되는 의뢰인 수, 매칭 안 되는 이름 목록, 회차 개수/기납부·예정 개수 등)
+app.get('/api/admin/fee-migration-preview', requireAdmin, async (req, res) => {
+  try {
+    const client = await getSheetsAuthorizedClient();
+    if (!client) return res.status(400).json({ error: '구글 계정이 연동되어 있지 않습니다.' });
+    const sheets = google.sheets({ version: 'v4', auth: client });
+    const result = await sheets.spreadsheets.values.get({
+      spreadsheetId: FEE_MIGRATION_SPREADSHEET_ID,
+      range: 'A1:AR200',
+    });
+    const rows = result.data.values || [];
+    const clients = parseFeeSheetRows(rows);
+
+    const cases = db.prepare('SELECT * FROM cases').all().map((c) => Object.assign({ _sortKey: c.id }, c));
+    const matched = [];
+    const unmatchedNames = [];
+    let totalInstallments = 0;
+    let paidCount = 0;
+    let upcomingCount = 0;
+    let dateParseFailures = 0;
+
+    clients.forEach((c) => {
+      const m = matchCaseByNameAndCaseNo(cases, c.name, '');
+      if (m) matched.push({ name: c.name, caseId: m.id });
+      else unmatchedNames.push(c.name);
+      if (c.engagementDateRaw && !c.engagementDate) dateParseFailures++;
+      c.installments.forEach((ins) => {
+        totalInstallments++;
+        if (ins.status === '완료') paidCount++; else upcomingCount++;
+      });
+    });
+
+    res.json({
+      totalClients: clients.length,
+      matchedCount: matched.length,
+      unmatchedCount: unmatchedNames.length,
+      unmatchedNames,
+      matched,
+      totalInstallments,
+      paidCount,
+      upcomingCount,
+      dateParseFailures,
+      sample: clients.slice(0, 3),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/sheets/status', requireLogin, (req, res) => {
   const row = getStoredGoogleAuth();
   const spreadsheetId = row && row.sheets_spreadsheet_id;

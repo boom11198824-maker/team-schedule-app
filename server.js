@@ -1498,6 +1498,23 @@ app.post('/api/admin/tasks-source/switch-to-app', requireAdmin, async (req, res)
   }
 });
 
+// 일회성 데이터 이식용 임시 유틸리티: 관리자가 연결한 구글 계정이 볼 수 있는 임의의
+// 스프레드시트에서 원하는 범위를 그대로 읽어온다. (수임료 납부일정을 시트에서 앱으로
+// 옮기는 등, 새로운 시트를 앱에 연결하기 전에 구조를 먼저 확인할 때 사용)
+app.get('/api/admin/sheet-raw', requireAdmin, async (req, res) => {
+  try {
+    const { spreadsheetId, range } = req.query;
+    if (!spreadsheetId || !range) return res.status(400).json({ error: 'spreadsheetId, range 쿼리 파라미터가 필요합니다.' });
+    const client = await getSheetsAuthorizedClient();
+    if (!client) return res.status(400).json({ error: '구글 계정이 연동되어 있지 않습니다.' });
+    const sheets = google.sheets({ version: 'v4', auth: client });
+    const result = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+    res.json({ values: result.data.values || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/sheets/status', requireLogin, (req, res) => {
   const row = getStoredGoogleAuth();
   const spreadsheetId = row && row.sheets_spreadsheet_id;

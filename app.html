@@ -103,6 +103,39 @@ button.btn-danger:hover { background: #f7d0d0; }
 .spacer { flex: 1; }
 .hidden { display: none !important; }
 
+/* ---- 날짜 범위 선택 캘린더(range picker) ---- */
+.range-picker {
+  position: fixed; z-index: 200; width: 280px;
+  background: white; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.22);
+  border: 1px solid #e2e6ed; padding: 12px;
+}
+.rp-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.rp-title { font-size: 14px; font-weight: 700; color: #14213d; }
+.rp-nav {
+  background: #eef1f6; border: none; border-radius: 6px; width: 26px; height: 26px;
+  font-size: 15px; cursor: pointer; color: #4b5a78; line-height: 1;
+}
+.rp-nav:hover { background: #e2e6ed; }
+.rp-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; margin-bottom: 2px; }
+.rp-wd { font-size: 11px; color: #8993a6; padding: 4px 0; }
+.rp-grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 2px; }
+.rp-cell { height: 32px; }
+.rp-day {
+  display: flex; align-items: center; justify-content: center; font-size: 13px; color: #14213d;
+  cursor: pointer; border-radius: 8px;
+}
+.rp-day:hover { background: #f1f3f7; }
+.rp-today { font-weight: 700; color: #ff6452; }
+.rp-in-range, .rp-in-range-preview { background: #ffe6e2; border-radius: 0; }
+.rp-hover-end { background: #ffe6e2; border-radius: 0 8px 8px 0; }
+.rp-start, .rp-end {
+  background: #ff6452; color: white; font-weight: 700;
+}
+.rp-start:not(.rp-single) { border-radius: 8px 0 0 8px; }
+.rp-end:not(.rp-single) { border-radius: 0 8px 8px 0; }
+.rp-single { border-radius: 8px; }
+.rp-hint { font-size: 12px; color: #8993a6; text-align: center; margin: 8px 0 0; }
+
 .emp-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
 .emp-table th, .emp-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #e2e6ed; }
 .emp-table button { font-size: 12px; padding: 4px 8px; }
@@ -220,14 +253,14 @@ button.btn-danger:hover { background: #f7d0d0; }
           <option value="기타">📌 기타</option>
         </select>
 
-        <div class="row">
+        <div class="row" id="sch-date-range-wrap">
           <div>
             <label>시작일</label>
-            <input type="text" class="date-field" id="sch-start" required placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+            <input type="text" class="date-field" id="sch-start" required readonly placeholder="yyyy-mm-dd" autocomplete="off" />
           </div>
           <div>
             <label>종료일</label>
-            <input type="text" class="date-field" id="sch-end" required placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+            <input type="text" class="date-field" id="sch-end" required readonly placeholder="yyyy-mm-dd" autocomplete="off" />
           </div>
         </div>
 
@@ -252,6 +285,8 @@ button.btn-danger:hover { background: #f7d0d0; }
       </form>
     </div>
   </div>
+
+  <div id="range-picker" class="range-picker hidden"></div>
 
   <div id="employees-modal" class="modal-backdrop hidden">
     <div class="modal">
@@ -490,34 +525,182 @@ function openScheduleModal({ startStr, endStr, existing } = {}) {
   }
   document.getElementById('sch-assignee-note').classList.toggle('hidden', !assigneeLocked);
 
-  syncPrevStartValue();
+  closeRangePicker();
   scheduleModal.classList.remove('hidden');
 }
 
-/* 시작일을 바꾸면 종료일이 (기존 기간을 유지한 채) 함께 따라가도록 처리
-   — 종료일이 시작일보다 앞선 날짜로 남는 것을 방지 */
+/* ---- 날짜 범위 선택 캘린더 (시작일 클릭 → 달력이 열리고, 시작일/종료일을 한 달력에서
+   연속으로 선택. Google Calendar/Booking.com/Airbnb 스타일) ---- */
 const schStartInput = document.getElementById('sch-start');
 const schEndInput = document.getElementById('sch-end');
-let prevSchStartValue = null;
+const rangePickerEl = document.getElementById('range-picker');
+const RANGE_WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+const rangePicker = { open: false, viewYear: 0, viewMonth: 0, start: null, end: null, mode: 'start', hover: null };
 
-function syncPrevStartValue() { prevSchStartValue = schStartInput.value; }
+function rpFmt(y, m, d) { return `${y}-${pad(m + 1)}-${pad(d)}`; }
+function rpParse(s) {
+  if (!isValidDateStr(s)) return null;
+  const [y, m, d] = s.split('-').map(Number);
+  return { y, m: m - 1, d };
+}
 
-schStartInput.addEventListener('change', () => {
-  if (!isValidDateStr(schStartInput.value)) { syncPrevStartValue(); return; }
-  const newStart = schStartInput.value;
+function closeRangePicker() {
+  rangePicker.open = false;
+  rangePickerEl.classList.add('hidden');
+  document.removeEventListener('mousedown', rangePickerOutsideHandler, true);
+}
 
-  let spanDays = 0;
-  if (prevSchStartValue && isValidDateStr(prevSchStartValue) && isValidDateStr(schEndInput.value)) {
-    const existingSpan = daysBetween(prevSchStartValue, schEndInput.value);
-    if (existingSpan > 0) spanDays = existingSpan;
+function rangePickerOutsideHandler(e) {
+  if (rangePickerEl.contains(e.target) || e.target === schStartInput || e.target === schEndInput) return;
+  closeRangePicker();
+}
+
+// 달력 높이를 화면에 그린 뒤 재서, 아래쪽 공간이 부족하면(모달의 취소/저장 버튼과
+// 겹치는 것을 방지) 입력창 위쪽으로 뒤집어서 띄운다. 월 이동으로 주(row) 수가
+// 바뀌어 높이가 달라질 수 있으므로 렌더링될 때마다 다시 계산한다.
+function rpReposition() {
+  const rect = document.getElementById('sch-date-range-wrap').getBoundingClientRect();
+  const pickerHeight = rangePickerEl.offsetHeight;
+  // 아래로 펼쳤을 때 부딪히는 기준선을 뷰포트 하단이 아니라 모달의 "취소/저장" 버튼 줄
+  // 상단으로 잡는다 (그래야 달력이 그 버튼들을 가려버리는 것을 막을 수 있다).
+  const actionsRow = document.querySelector('#schedule-modal .modal-actions');
+  const floorY = Math.min(actionsRow ? actionsRow.getBoundingClientRect().top : window.innerHeight, window.innerHeight);
+  const spaceBelow = floorY - rect.bottom;
+  // 아래쪽에 다 들어가지 않으면 위로 띄운다. 위쪽 공간도 부족하면(작은 화면 등)
+  // 뷰포트 상단에서 8px 여백을 두고 클리핑하는데, 그래도 "취소/저장" 버튼 줄보다는
+  // 항상 위쪽에 오므로 중요한 액션 버튼을 가리는 것만큼은 항상 피할 수 있다.
+  const openUpward = spaceBelow < pickerHeight + 12;
+  if (openUpward) {
+    // 위로 띄우되, 모달/뷰포트 위쪽으로 잘리지 않도록 최소 8px 여백은 유지한다.
+    const top = Math.max(8, rect.top - pickerHeight - 6);
+    rangePickerEl.style.top = `${top}px`;
+  } else {
+    rangePickerEl.style.top = `${rect.bottom + 6}px`;
+  }
+  rangePickerEl.style.left = `${rect.left}px`;
+}
+
+function openRangePicker() {
+  const startVal = schStartInput.value;
+  const endVal = schEndInput.value;
+  const sp = rpParse(startVal);
+  const ep = rpParse(endVal);
+
+  rangePicker.start = sp ? startVal : null;
+  rangePicker.end = ep ? endVal : null;
+  rangePicker.mode = 'start';
+  rangePicker.hover = null;
+  if (sp) { rangePicker.viewYear = sp.y; rangePicker.viewMonth = sp.m; }
+  else { const t = new Date(); rangePicker.viewYear = t.getFullYear(); rangePicker.viewMonth = t.getMonth(); }
+
+  rangePicker.open = true;
+  renderRangePicker();
+
+  rangePickerEl.classList.remove('hidden');
+  rpReposition();
+
+  document.addEventListener('mousedown', rangePickerOutsideHandler, true);
+}
+
+function rpShiftMonth(delta) {
+  let m = rangePicker.viewMonth + delta;
+  let y = rangePicker.viewYear;
+  if (m < 0) { m = 11; y -= 1; } else if (m > 11) { m = 0; y += 1; }
+  rangePicker.viewMonth = m;
+  rangePicker.viewYear = y;
+  renderRangePicker();
+  rpReposition();
+}
+
+function rpPick(dateStr) {
+  if (rangePicker.mode === 'start') {
+    rangePicker.start = dateStr;
+    rangePicker.end = null;
+    rangePicker.mode = 'end';
+    rangePicker.hover = null;
+    renderRangePicker();
+    return;
+  }
+  // mode === 'end' — 시작일보다 이전 날짜를 고르면 그 날짜를 새 시작일로 다시 잡는다
+  // (Airbnb 등과 동일하게, 에러를 띄우는 대신 자연스럽게 재선택되도록 함)
+  if (dateStr < rangePicker.start) {
+    rangePicker.start = dateStr;
+    rangePicker.end = null;
+    rangePicker.hover = null;
+    renderRangePicker();
+    return;
+  }
+  rangePicker.end = dateStr;
+  schStartInput.value = rangePicker.start;
+  schEndInput.value = rangePicker.end;
+  closeRangePicker();
+}
+
+// 날짜 하나에 대한 클래스 목록을 계산한다. 렌더링과 호버 갱신에서 공통으로 사용한다.
+function rpCellClasses(ds, todayStr) {
+  const { start, end, mode, hover } = rangePicker;
+  const classes = ['rp-day'];
+  if (ds === todayStr) classes.push('rp-today');
+  const previewEnd = mode === 'end' && start && hover ? hover : null;
+  const inRange = (start && end && ds > start && ds < end) || (previewEnd && ds > start && ds < previewEnd);
+  if (inRange) classes.push('rp-in-range');
+  if (previewEnd && ds === previewEnd && ds !== start) classes.push('rp-hover-end');
+  if (start && ds === start) classes.push('rp-start');
+  if (end && ds === end) classes.push('rp-end');
+  if (start && end && start === end && ds === start) classes.push('rp-single');
+  return classes.join(' ');
+}
+
+// 마우스 호버 미리보기는 그리드를 다시 그리지 않고, 이미 존재하는 셀들의 class만 갱신한다.
+// innerHTML을 매번 새로 그리면 마우스가 셀 위를 지나갈 때마다 DOM 노드가 교체되어
+// 클릭 대상이 화면에서 떨어져 나가(detach) 클릭이 씹히는 문제가 있었다.
+function rpUpdateHoverClasses() {
+  const todayStr = dateOnly(new Date());
+  rangePickerEl.querySelectorAll('.rp-day').forEach((el) => {
+    el.className = rpCellClasses(el.dataset.date, todayStr);
+  });
+}
+
+function renderRangePicker() {
+  const { viewYear, viewMonth, mode } = rangePicker;
+  const first = new Date(viewYear, viewMonth, 1);
+  const startWeekday = first.getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const todayStr = dateOnly(new Date());
+
+  let cells = '';
+  for (let i = 0; i < startWeekday; i++) cells += `<div class="rp-cell"></div>`;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = rpFmt(viewYear, viewMonth, d);
+    cells += `<div class="rp-cell"><div class="${rpCellClasses(ds, todayStr)}" data-date="${ds}">${d}</div></div>`;
   }
 
-  schEndInput.value = addDays(newStart, spanDays);
-  syncPrevStartValue();
-});
+  rangePickerEl.innerHTML = `
+    <div class="rp-header">
+      <button type="button" class="rp-nav" id="rp-prev">‹</button>
+      <span class="rp-title">${viewYear}년 ${viewMonth + 1}월</span>
+      <button type="button" class="rp-nav" id="rp-next">›</button>
+    </div>
+    <div class="rp-weekdays">${RANGE_WEEKDAYS.map((w) => `<div class="rp-wd">${w}</div>`).join('')}</div>
+    <div class="rp-grid">${cells}</div>
+    <p class="rp-hint">${mode === 'start' ? '시작일을 선택하세요' : '종료일을 선택하세요 (하루 일정이면 같은 날짜 선택)'}</p>
+  `;
+
+  document.getElementById('rp-prev').addEventListener('click', () => rpShiftMonth(-1));
+  document.getElementById('rp-next').addEventListener('click', () => rpShiftMonth(1));
+  rangePickerEl.querySelectorAll('.rp-day').forEach((el) => {
+    el.addEventListener('click', () => rpPick(el.dataset.date));
+    el.addEventListener('mouseenter', () => {
+      if (rangePicker.mode === 'end' && rangePicker.start) { rangePicker.hover = el.dataset.date; rpUpdateHoverClasses(); }
+    });
+  });
+}
+
+schStartInput.addEventListener('click', () => openRangePicker());
+schEndInput.addEventListener('click', () => openRangePicker());
 
 document.getElementById('btn-new-schedule').addEventListener('click', () => openScheduleModal());
-document.getElementById('btn-cancel-schedule').addEventListener('click', () => scheduleModal.classList.add('hidden'));
+document.getElementById('btn-cancel-schedule').addEventListener('click', () => { closeRangePicker(); scheduleModal.classList.add('hidden'); });
 
 document.getElementById('schedule-form').addEventListener('submit', async (e) => {
   e.preventDefault();

@@ -79,6 +79,8 @@ button.btn-danger:hover { background: #f7d0d0; }
   width: 100%; padding: 9px 11px; border: 1px solid #d7dce6; border-radius: 8px; font-size: 14px;
   font-family: inherit; background: white;
 }
+.modal input[readonly] { background: #f1f3f7; color: #6b7690; }
+.field-note { font-size: 12px; color: #8993a6; margin: 4px 0 0; }
 .detail-modal { width: 380px; }
 .detail-header { margin-bottom: 4px; }
 .detail-badge {
@@ -231,6 +233,7 @@ button.btn-danger:hover { background: #f7d0d0; }
 
         <label>담당자</label>
         <input type="text" id="sch-assignee" placeholder="예: 진홍" />
+        <p id="sch-assignee-note" class="field-note hidden">본인 일정으로 자동 고정됩니다. (관리자만 변경 가능)</p>
 
         <label>장소</label>
         <input type="text" id="sch-location" />
@@ -474,6 +477,19 @@ function openScheduleModal({ startStr, endStr, existing } = {}) {
     document.getElementById('sch-assignee').value = currentUser.name;
     Array.from(form.elements).forEach((el) => (el.disabled = false));
   }
+
+  // 담당자: 관리자가 아니면 로그인한 본인 이름으로 고정 (다른 사람 일정으로 바꿔 입력할 수 없음)
+  const isAdmin = currentUser.role === 'admin';
+  const assigneeInput = document.getElementById('sch-assignee');
+  const assigneeLocked = !isAdmin && !assigneeInput.disabled;
+  if (assigneeLocked) {
+    assigneeInput.value = currentUser.name;
+    assigneeInput.readOnly = true;
+  } else {
+    assigneeInput.readOnly = false;
+  }
+  document.getElementById('sch-assignee-note').classList.toggle('hidden', !assigneeLocked);
+
   syncPrevStartValue();
   scheduleModal.classList.remove('hidden');
 }

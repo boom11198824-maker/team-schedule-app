@@ -1722,6 +1722,77 @@ app.post('/api/admin/fee-migration-run', requireAdmin, async (req, res) => {
   }
 });
 
+// 사건유형(개인회생/개인파산) 추정: 진홍 님 말씀대로 파산은 보통 5회차까지, 회생은 보통 4회차까지
+// 납부받는다는 실무 규칙을 이용해, 시트의 회차 개수로 사건유형을 추측한다.
+// "보통"이라는 표현대로 100% 확실한 규칙은 아니라서, 이미 사건유형이 채워진 사건은 절대 건드리지 않고
+// 비어있는 사건에만 참고용으로 채워 넣는다 (실행 전 미리보기로 먼저 몇 건인지 확인 가능).
+async function computeCaseTypeSuggestions() {
+  const client = await getSheetsAuthorizedClient();
+  if (!client) { const err = new Error('구글 계정이 연동되어 있지 않습니다.'); throw err; }
+  const sheets = google.sheets({ version: 'v4', auth: client });
+  const result = await sheets.spreadsheets.values.get({ spreadsheetId: FEE_MIGRATION_SPREADSHEET_ID, range: 'A1:AR200' });
+  const rows = result.data.values || [];
+  const sheetClients = parseFeeSheetRows(rows);
+  const existingCases = db.prepare('SELECT * FROM cases').all().map((r) => Object.assign({ _sortKey: r.id }, r));
+
+  const suggestions = [];
+  let alreadySetCount = 0;
+  let noMatchCount = 0;
+
+  sheetClients.forEach((c) => {
+    const maxSeq = c.installments.reduce((m, ins) => Math.max(m, ins.seq), 0);
+    if (!maxSeq) return;
+    const matchedCase = matchCaseByNameAndCaseNo(existingCases, c.name, '');
+    if (!matchedCase) { noMatchCount++; return; }
+    if (matchedCase.case_type) { alreadySetCount++; return; }
+    suggestions.push({
+      caseId: matchedCase.id,
+      name: c.name,
+      maxSeq,
+      suggestedType: maxSeq >= 5 ? '개인파산' : '개인회생',
+    });
+  });
+
+  return { suggestions, alreadySetCount, noMatchCount };
+}
+
+app.get('/api/admin/case-type-suggestion-preview', requireAdmin, async (req, res) => {
+  try {
+    const { suggestions, alreadySetCount, noMatchCount } = await computeCaseTypeSuggestions();
+    const seq5 = suggestions.filter((s) => s.suggestedType === '개인파산');
+    const seq4OrLess = suggestions.filter((s) => s.suggestedType === '개인회생');
+    res.json({
+      totalSuggested: suggestions.length,
+      alreadySetCount,
+      noMatchCount,
+      개인파산Count: seq5.length,
+      개인회생Count: seq4OrLess.length,
+      개인파산Sample: seq5.slice(0, 10).map((s) => s.name),
+      개인회생Sample: seq4OrLess.slice(0, 10).map((s) => s.name),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/case-type-suggestion-run', requireAdmin, async (req, res) => {
+  try {
+    const { suggestions } = await computeCaseTypeSuggestions();
+    let updated = 0;
+    suggestions.forEach((s) => {
+      // 재확인: 그 사이 다른 곳에서 이미 채워졌을 수 있으니 실행 시점에도 다시 빈 값인지 확인
+      const fresh = db.prepare('SELECT case_type FROM cases WHERE id = ?').get(s.caseId);
+      if (fresh && !fresh.case_type) {
+        db.prepare('UPDATE cases SET case_type = ? WHERE id = ?').run(s.suggestedType, s.caseId);
+        updated++;
+      }
+    });
+    res.json({ updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/sheets/status', requireLogin, (req, res) => {
   const row = getStoredGoogleAuth();
   const spreadsheetId = row && row.sheets_spreadsheet_id;

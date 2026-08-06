@@ -1910,57 +1910,111 @@ function attachClientDocs(c) {
   });
 }
 
-// 의뢰인 명단(외부 시트)의 관할법원/사건번호는 원래 읽기 전용이지만, 사건상세 페이지에서
-// 직접 입력/수정한 값이 있으면 그게 더 최신 정보이므로 화면 표시는 그쪽을 우선한다.
-// (client_documents 조회 키(court_case_no)는 attachClientDocs에서 먼저 시트 원본 값으로 계산한 뒤에
-// 이 오버라이드를 적용해서, 기존에 저장된 인감/USB 수령 여부 매칭이 깨지지 않도록 한다.)
-function attachCaseOverrides(c, existingCases) {
-  const matched = matchCaseByNameAndCaseNo(existingCases, c.client_name, c.court_case_no);
-  if (!matched) return c;
-  return Object.assign({}, c, {
-    court: matched.court || c.court,
-    court_case_no: matched.court_case_no || c.court_case_no,
-    case_id: matched.id,
-  });
-}
-
-// 상담관리(사건상세)에서 상태를 이 값들로 바꾸면 "계약된 의뢰인"으로 보고 의뢰인목록에도 노출한다.
+// 상담관리(사건상세)에서 상태를 이 값들로 바꾸면 "계약된 의뢰인"으로 보고 의뢰인목록에 노출한다.
 // case-detail.html의 #f-status 옵션(상담중/접수전/사건진행중/개시결정후)과 짝을 맞춘 목록.
 const CONTRACTED_CASE_STATUSES = ['사건진행중', '개시결정후'];
 
 // getClients() 역할: 자동완성/검색창에 쓸 의뢰인 목록을 돌려준다. 인감도장·USB 수령 여부도 같이 붙여서 준다.
-app.get('/api/clients', requireLogin, async (req, res) => {
+// (2026-08: 의뢰인 명단 외부 구글시트는 더 이상 갱신되지 않아 완전히 폐기하고, 앱 SQLite의 cases
+//  테이블 하나만을 단일 원본으로 사용한다 - "하나의 플랫폼 / SQLite 단일 데이터베이스" 원칙.
+//  상담관리에서 상태를 "사건진행중"/"개시결정후"로 바꾸는 순간 여기 자동으로 나타난다.)
+app.get('/api/clients', requireLogin, (req, res) => {
   try {
-    const clients = await readClientsFromExternalSheet();
-    // 화면에는 시트 역순(최근에 추가된 의뢰인이 위로 오도록)으로 보여준다.
-    // _sortKey(원본 시트 행 순서)는 그대로 유지되므로 사건 매칭 로직에는 영향이 없다.
-    const withDocs = (clients || []).slice().reverse().map(attachClientDocs);
-    const existingCases = db.prepare('SELECT * FROM cases').all().map((r) => Object.assign({ _sortKey: r.id }, r));
-    const overridden = withDocs.map((c) => attachCaseOverrides(c, existingCases));
-
-    // 의뢰인 명단(외부 시트)에는 없지만, 상담관리에서 직접 등록해 앱(SQLite)에만 있는 사건은
-    // 계약이 성사되어 상태가 "사건진행중"/"개시결정후"로 바뀐 순간부터 의뢰인목록에도 나타나야 한다.
-    // (상담관리 -> 상태변경으로 의뢰인 전환하는 흐름 지원. 원칙 3: 모든 데이터는 Client 중심으로 연결)
-    const matchedCaseIds = new Set(overridden.map((c) => c.case_id).filter(Boolean));
-    const caseOnlyClients = existingCases
-      .filter((c) => CONTRACTED_CASE_STATUSES.includes(c.status) && !matchedCaseIds.has(c.id))
-      .sort((a, b) => b.id - a.id)
-      .map((c) => attachClientDocs({
-        id: `case-${c.id}`,
-        source: 'app-case',
-        client_name: c.client_name,
-        phone: c.phone || '',
-        court: c.court || '',
-        court_case_no: c.court_case_no || '',
-        assignee_name: c.assignee_name || '',
-        case_id: c.id,
-      }));
-
-    // 앱에서 새로 계약 전환된 의뢰인을 목록 맨 위(가장 최근)에 보여준다.
-    res.json(caseOnlyClients.concat(overridden));
+    const placeholders = CONTRACTED_CASE_STATUSES.map(() => '?').join(', ');
+    const cases = db.prepare(`SELECT * FROM cases WHERE status IN (${placeholders}) ORDER BY id DESC`)
+      .all(...CONTRACTED_CASE_STATUSES);
+    const clients = cases.map((c) => attachClientDocs({
+      id: `case-${c.id}`,
+      case_id: c.id,
+      client_name: c.client_name,
+      phone: c.phone || '',
+      court: c.court || '',
+      court_case_no: c.court_case_no || '',
+      assignee_name: c.assignee_name || '',
+    }));
+    res.json(clients);
   } catch (err) {
     console.error('의뢰인 목록 읽기 실패:', err.message);
     res.status(500).json({ error: '의뢰인 목록을 불러오지 못했습니다: ' + err.message });
+  }
+});
+
+// ── 의뢰인 명단(외부 구글시트) → 앱(SQLite cases) 완전 이식 (1회성) ───────────────
+// 더 이상 아무도 채워넣지 않는 시트이므로, 시트에만 있던 정보(연락처/법원/사건번호)를
+// cases 테이블로 옮겨 담아 /api/clients가 시트를 전혀 읽지 않아도 되게 만든다.
+// - 이미 매칭되는 사건이 있으면: 비어있는 필드만 시트 값으로 채운다 (사건상세에서 이미
+//   입력해둔 값은 절대 덮어쓰지 않는다 - 원칙 11: 데이터는 절대 잃지 않는다).
+// - 매칭되는 사건이 없으면: 새 사건을 만들고 상태를 "사건진행중"(이미 계약된 의뢰인)으로 시작한다.
+async function computeClientsMigrationPlan() {
+  const sheetClients = await readClientsFromExternalSheet();
+  if (!sheetClients) { throw new Error('의뢰인 명단 시트가 연동되어 있지 않습니다.'); }
+  const existingCases = db.prepare('SELECT * FROM cases').all().map((r) => Object.assign({ _sortKey: r.id }, r));
+
+  const toUpdate = [];
+  const toCreate = [];
+
+  sheetClients.forEach((sc) => {
+    const matched = matchCaseByNameAndCaseNo(existingCases, sc.client_name, sc.court_case_no);
+    if (matched) {
+      const fill = {};
+      if (!matched.phone && sc.phone) fill.phone = sc.phone;
+      if (!matched.court && sc.court) fill.court = sc.court;
+      if (!matched.court_case_no && sc.court_case_no) fill.court_case_no = sc.court_case_no;
+      if (Object.keys(fill).length) toUpdate.push({ caseId: matched.id, name: sc.client_name, fill });
+    } else {
+      toCreate.push({ name: sc.client_name, phone: sc.phone || '', court: sc.court || '', court_case_no: sc.court_case_no || '' });
+    }
+  });
+
+  return { toUpdate, toCreate, totalSheetClients: sheetClients.length };
+}
+
+app.get('/api/admin/clients-migration-preview', requireAdmin, async (req, res) => {
+  try {
+    const { toUpdate, toCreate, totalSheetClients } = await computeClientsMigrationPlan();
+    res.json({
+      totalSheetClients,
+      willUpdateCount: toUpdate.length,
+      willCreateCount: toCreate.length,
+      willUpdateSample: toUpdate.slice(0, 10),
+      willCreateSample: toCreate.slice(0, 10),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/clients-migration-run', requireAdmin, async (req, res) => {
+  try {
+    const { toUpdate, toCreate } = await computeClientsMigrationPlan();
+    let updated = 0;
+    let created = 0;
+
+    toUpdate.forEach((u) => {
+      // 실행 시점에 다시 한 번 확인: 그 사이 사건상세에서 값이 채워졌으면 덮어쓰지 않는다.
+      const fresh = db.prepare('SELECT * FROM cases WHERE id = ?').get(u.caseId);
+      if (!fresh) return;
+      const fields = [];
+      const values = [];
+      if (u.fill.phone && !fresh.phone) { fields.push('phone = ?'); values.push(u.fill.phone); }
+      if (u.fill.court && !fresh.court) { fields.push('court = ?'); values.push(u.fill.court); }
+      if (u.fill.court_case_no && !fresh.court_case_no) { fields.push('court_case_no = ?'); values.push(u.fill.court_case_no); }
+      if (!fields.length) return;
+      values.push(u.caseId);
+      db.prepare(`UPDATE cases SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+      updated++;
+    });
+
+    toCreate.forEach((c) => {
+      db.prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
+                  VALUES (?, ?, ?, ?, '', '', '', '', '', '', '사건진행중', ?)`)
+        .run(c.name, c.phone, c.court, c.court_case_no, req.user.id);
+      created++;
+    });
+
+    res.json({ updated, created });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

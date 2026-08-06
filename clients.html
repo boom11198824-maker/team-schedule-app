@@ -338,7 +338,7 @@ function openClientInfoModal(c) {
     (c.court ? `관할: ${escapeHTML(c.court)}<br>` : '') +
     (c.court_case_no ? `사건번호: ${escapeHTML(c.court_case_no)}<br>` : '') +
     (c.phone ? `연락처: ${escapeHTML(c.phone)}<br>` : '') +
-    `<span style="color:var(--text-secondary); font-size:12px;">※ 이름·연락처는 연동된 구글시트 원본입니다. 관할법원·사건번호는 사건상세에서 입력/수정한 값이 있으면 그 값을 우선 표시합니다.</span>`;
+    `<span style="color:var(--text-secondary); font-size:12px;">※ 위 기본정보는 사건상세 페이지에서 입력/수정할 수 있습니다.</span>`;
 
   const nameKey = (c.client_name || '').trim().replace(/\s+/g, '');
   const related = (allTasks || []).filter((t) => (t.client_name || '').trim().replace(/\s+/g, '') === nameKey)
@@ -371,6 +371,12 @@ function openClientInfoModal(c) {
   const openCaseErrorEl = document.getElementById('ci-open-case-error');
   openCaseErrorEl.textContent = '';
   document.getElementById('btn-open-case-detail').onclick = async () => {
+    // 의뢰인목록은 이제 앱 자체 사건(cases)에서 바로 만들어지므로, 목록에 뜬 의뢰인은
+    // 이미 사건 ID(case_id)를 갖고 있다 - 굳이 다시 찾거나 만들 필요 없이 바로 이동한다.
+    if (c.case_id) {
+      window.location.href = `/case-detail.html?id=${c.case_id}`;
+      return;
+    }
     openCaseErrorEl.textContent = '';
     const btn = document.getElementById('btn-open-case-detail');
     btn.disabled = true;
@@ -412,14 +418,7 @@ async function init() {
     document.getElementById('nav-settings').style.display = 'inline-block';
   }
 
-  let sheetsStatus = { clientsConnected: false };
-  try { sheetsStatus = await api('/api/sheets/status'); } catch {}
-
-  if (!sheetsStatus.clientsConnected) {
-    document.getElementById('not-connected').classList.remove('hidden');
-    document.getElementById('list-area').classList.add('hidden');
-    return;
-  }
+  // 의뢰인목록은 이제 앱 자체 사건(cases) 데이터만 사용하므로 구글시트 연동 여부와 무관하게 항상 보여준다.
   document.getElementById('list-area').classList.remove('hidden');
 
   [allClients, allTasks] = await Promise.all([

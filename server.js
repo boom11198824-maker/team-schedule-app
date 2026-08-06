@@ -1924,6 +1924,10 @@ function attachCaseOverrides(c, existingCases) {
   });
 }
 
+// 상담관리(사건상세)에서 상태를 이 값들로 바꾸면 "계약된 의뢰인"으로 보고 의뢰인목록에도 노출한다.
+// case-detail.html의 #f-status 옵션(상담중/접수전/사건진행중/개시결정후)과 짝을 맞춘 목록.
+const CONTRACTED_CASE_STATUSES = ['사건진행중', '개시결정후'];
+
 // getClients() 역할: 자동완성/검색창에 쓸 의뢰인 목록을 돌려준다. 인감도장·USB 수령 여부도 같이 붙여서 준다.
 app.get('/api/clients', requireLogin, async (req, res) => {
   try {
@@ -1932,7 +1936,28 @@ app.get('/api/clients', requireLogin, async (req, res) => {
     // _sortKey(원본 시트 행 순서)는 그대로 유지되므로 사건 매칭 로직에는 영향이 없다.
     const withDocs = (clients || []).slice().reverse().map(attachClientDocs);
     const existingCases = db.prepare('SELECT * FROM cases').all().map((r) => Object.assign({ _sortKey: r.id }, r));
-    res.json(withDocs.map((c) => attachCaseOverrides(c, existingCases)));
+    const overridden = withDocs.map((c) => attachCaseOverrides(c, existingCases));
+
+    // 의뢰인 명단(외부 시트)에는 없지만, 상담관리에서 직접 등록해 앱(SQLite)에만 있는 사건은
+    // 계약이 성사되어 상태가 "사건진행중"/"개시결정후"로 바뀐 순간부터 의뢰인목록에도 나타나야 한다.
+    // (상담관리 -> 상태변경으로 의뢰인 전환하는 흐름 지원. 원칙 3: 모든 데이터는 Client 중심으로 연결)
+    const matchedCaseIds = new Set(overridden.map((c) => c.case_id).filter(Boolean));
+    const caseOnlyClients = existingCases
+      .filter((c) => CONTRACTED_CASE_STATUSES.includes(c.status) && !matchedCaseIds.has(c.id))
+      .sort((a, b) => b.id - a.id)
+      .map((c) => attachClientDocs({
+        id: `case-${c.id}`,
+        source: 'app-case',
+        client_name: c.client_name,
+        phone: c.phone || '',
+        court: c.court || '',
+        court_case_no: c.court_case_no || '',
+        assignee_name: c.assignee_name || '',
+        case_id: c.id,
+      }));
+
+    // 앱에서 새로 계약 전환된 의뢰인을 목록 맨 위(가장 최근)에 보여준다.
+    res.json(caseOnlyClients.concat(overridden));
   } catch (err) {
     console.error('의뢰인 목록 읽기 실패:', err.message);
     res.status(500).json({ error: '의뢰인 목록을 불러오지 못했습니다: ' + err.message });

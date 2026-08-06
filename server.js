@@ -1910,13 +1910,29 @@ function attachClientDocs(c) {
   });
 }
 
+// 의뢰인 명단(외부 시트)의 관할법원/사건번호는 원래 읽기 전용이지만, 사건상세 페이지에서
+// 직접 입력/수정한 값이 있으면 그게 더 최신 정보이므로 화면 표시는 그쪽을 우선한다.
+// (client_documents 조회 키(court_case_no)는 attachClientDocs에서 먼저 시트 원본 값으로 계산한 뒤에
+// 이 오버라이드를 적용해서, 기존에 저장된 인감/USB 수령 여부 매칭이 깨지지 않도록 한다.)
+function attachCaseOverrides(c, existingCases) {
+  const matched = matchCaseByNameAndCaseNo(existingCases, c.client_name, c.court_case_no);
+  if (!matched) return c;
+  return Object.assign({}, c, {
+    court: matched.court || c.court,
+    court_case_no: matched.court_case_no || c.court_case_no,
+    case_id: matched.id,
+  });
+}
+
 // getClients() 역할: 자동완성/검색창에 쓸 의뢰인 목록을 돌려준다. 인감도장·USB 수령 여부도 같이 붙여서 준다.
 app.get('/api/clients', requireLogin, async (req, res) => {
   try {
     const clients = await readClientsFromExternalSheet();
     // 화면에는 시트 역순(최근에 추가된 의뢰인이 위로 오도록)으로 보여준다.
     // _sortKey(원본 시트 행 순서)는 그대로 유지되므로 사건 매칭 로직에는 영향이 없다.
-    res.json((clients || []).slice().reverse().map(attachClientDocs));
+    const withDocs = (clients || []).slice().reverse().map(attachClientDocs);
+    const existingCases = db.prepare('SELECT * FROM cases').all().map((r) => Object.assign({ _sortKey: r.id }, r));
+    res.json(withDocs.map((c) => attachCaseOverrides(c, existingCases)));
   } catch (err) {
     console.error('의뢰인 목록 읽기 실패:', err.message);
     res.status(500).json({ error: '의뢰인 목록을 불러오지 못했습니다: ' + err.message });

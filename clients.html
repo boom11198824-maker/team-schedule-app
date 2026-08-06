@@ -338,7 +338,7 @@ function openClientInfoModal(c) {
     (c.court ? `관할: ${escapeHTML(c.court)}<br>` : '') +
     (c.court_case_no ? `사건번호: ${escapeHTML(c.court_case_no)}<br>` : '') +
     (c.phone ? `연락처: ${escapeHTML(c.phone)}<br>` : '') +
-    `<span style="color:var(--text-secondary); font-size:12px;">※ 위 기본정보는 연동된 구글시트에서 가져온 것으로, 앱에서 수정할 수 없습니다.</span>`;
+    `<span style="color:var(--text-secondary); font-size:12px;">※ 이름·연락처는 연동된 구글시트 원본입니다. 관할법원·사건번호는 사건상세에서 입력/수정한 값이 있으면 그 값을 우선 표시합니다.</span>`;
 
   const nameKey = (c.client_name || '').trim().replace(/\s+/g, '');
   const related = (allTasks || []).filter((t) => (t.client_name || '').trim().replace(/\s+/g, '') === nameKey)

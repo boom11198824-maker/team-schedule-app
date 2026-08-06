@@ -178,6 +178,7 @@ for (const col of [
   'case_type TEXT', 'intake_date TEXT', 'assigned_lawyer TEXT', 'current_stage TEXT', 'status TEXT',
   'seal_received INTEGER NOT NULL DEFAULT 0', 'seal_received_date TEXT',
   'cert_usb_received INTEGER NOT NULL DEFAULT 0', 'cert_usb_received_date TEXT',
+  'updated_at TEXT',
 ]) {
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
@@ -185,6 +186,8 @@ for (const col of [
     if (!String(err.message).includes('duplicate column')) throw err;
   }
 }
+// updated_at이 없는 기존 사건은 등록일로 백필 (의뢰인 목록을 "최근 변경순"으로 보여주기 위해 필요).
+db.exec("UPDATE cases SET updated_at = created_at WHERE updated_at IS NULL");
 
 // 상담레포트 등 사건(=상담/의뢰인)에 첨부하는 문서 파일. 실제 파일은 DATA_DIR(영구 디스크) 아래에
 // 저장하고, 이 테이블에는 메타데이터만 보관한다 (문서는 자산이므로 삭제를 전제로 하지 않는다).
@@ -745,8 +748,8 @@ async function migrateSheetTasksToApp(adminUserId) {
     let matchedCase = matchCaseByNameAndCaseNo(realCases, t.client_name, t.court_case_no);
     if (!matchedCase) {
       const info = db
-        .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
-                  VALUES (?, '', ?, ?, ?, '', '', '', '', '', '사건진행중', ?)`)
+        .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by, updated_at)
+                  VALUES (?, '', ?, ?, ?, '', '', '', '', '', '사건진행중', ?, datetime('now'))`)
         .run(t.client_name, t.court || '', t.court_case_no || '', t.assignee_name || '', adminUserId);
       matchedCase = { id: info.lastInsertRowid, client_name: t.client_name, _sortKey: info.lastInsertRowid };
       realCases.push(matchedCase);
@@ -1010,8 +1013,8 @@ app.post('/api/cases', requireLogin, (req, res) => {
   if (!client_name) return res.status(400).json({ error: '의뢰인명은 필수입니다.' });
 
   const info = db
-    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
     .run(
       client_name, phone || '', court || '', court_case_no || '', assignee_name || '', memo || '',
       case_type || '', intake_date || '', assigned_lawyer || '', current_stage || '', status || '', req.user.id
@@ -1046,7 +1049,7 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
     cert_usb_received_date: cert_usb_received_date ?? existing.cert_usb_received_date,
   };
   db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, assigned_lawyer=?, current_stage=?, status=?,
-              seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=? WHERE id = ?`)
+              seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=?, updated_at=datetime('now') WHERE id = ?`)
     .run(
       updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo,
       updated.case_type, updated.intake_date, updated.assigned_lawyer, updated.current_stage, updated.status,
@@ -1638,8 +1641,8 @@ app.post('/api/admin/fee-migration-run', requireAdmin, async (req, res) => {
           return;
         }
         const info = db
-          .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
-                    VALUES (?, ?, ?, ?, '', '', '', ?, '', '', '사건진행중', ?)`)
+          .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by, updated_at)
+                    VALUES (?, ?, ?, ?, '', '', '', ?, '', '', '사건진행중', ?, datetime('now'))`)
           .run(c.name, rosterMatch.phone || '', rosterMatch.court || '', rosterMatch.court_case_no || '', c.engagementDate || '', req.user.id);
         matchedCase = { id: info.lastInsertRowid };
         casesCreated++;
@@ -1801,11 +1804,13 @@ const CONTRACTED_CASE_STATUSES = ['사건진행중', '개시결정후'];
 // getClients() 역할: 자동완성/검색창에 쓸 의뢰인 목록을 돌려준다. 인감도장·USB 수령 여부도 같이 붙여서 준다.
 // (2026-08: 의뢰인 명단 외부 구글시트는 더 이상 갱신되지 않아 완전히 폐기하고, 앱 SQLite의 cases
 //  테이블 하나만을 단일 원본으로 사용한다 - "하나의 플랫폼 / SQLite 단일 데이터베이스" 원칙.
-//  상담관리에서 상태를 "사건진행중"/"개시결정후"로 바꾸는 순간 여기 자동으로 나타난다.)
+//  상담관리에서 상태를 "사건진행중"/"개시결정후"로 바꾸는 순간 여기 자동으로 나타난다.
+//  정렬은 "최근 변경순"(updated_at DESC) - 사건을 처음 등록한 시점이 오래됐어도(예: 상담만
+//  받다가 한참 뒤에 계약하는 경우) 방금 계약/수정된 의뢰인이 맨 위에 오도록 한다.)
 app.get('/api/clients', requireLogin, (req, res) => {
   try {
     const placeholders = CONTRACTED_CASE_STATUSES.map(() => '?').join(', ');
-    const cases = db.prepare(`SELECT * FROM cases WHERE status IN (${placeholders}) ORDER BY id DESC`)
+    const cases = db.prepare(`SELECT * FROM cases WHERE status IN (${placeholders}) ORDER BY updated_at DESC, id DESC`)
       .all(...CONTRACTED_CASE_STATUSES);
     const clients = cases.map((c) => attachClientDocs({
       id: `case-${c.id}`,
@@ -1879,8 +1884,8 @@ app.post('/api/clients/open-case', requireLogin, (req, res) => {
   // 의뢰인 시트(원본)에 이미 올라와 있는 사람은 계약이 성사된 정식 의뢰인이므로
   // status를 '사건진행중'으로 시작한다 (상담관리에서 새로 등록하는 경우와 구분).
   const info = db
-    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
     .run(client_name, phone || '', court || '', court_case_no || '', '', '', '', '', '', '', '사건진행중', req.user.id);
   res.status(201).json({ id: info.lastInsertRowid, created: true });
 });
@@ -1903,8 +1908,8 @@ app.post('/api/clients/schedule', requireLogin, async (req, res) => {
     let matchedCase = matchCaseByNameAndCaseNo(cases, client_name, court_case_no);
     if (!matchedCase) {
       const info = db
-        .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
-                  VALUES (?, '', '', ?, ?, '', '', '', '', '', '사건진행중', ?)`)
+        .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by, updated_at)
+                  VALUES (?, '', '', ?, ?, '', '', '', '', '', '사건진행중', ?, datetime('now'))`)
         .run(client_name, court_case_no || '', assignee_name || '', req.user.id);
       matchedCase = { id: info.lastInsertRowid };
     }

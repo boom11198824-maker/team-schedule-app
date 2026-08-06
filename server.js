@@ -674,47 +674,9 @@ function matchCaseByNameAndCaseNo(cases, clientName, courtCaseNo) {
   return candidates.reduce((latest, c) => (c._sortKey > latest._sortKey ? c : latest), candidates[0]);
 }
 
-// 진홍 님이 이미 만들어둔 외부 "의뢰인 명단" 구글시트(예: [법진 사건관리] 스프레드시트의 특정 탭)를
-// 읽어온다. 이 탭은 보통 IMPORTRANGE 등으로 채워진 읽기 전용 원본이라 앱에서 절대 쓰지 않는다.
-// clients_sheet_tab이 설정되어 있지 않으면 null을 반환해서 호출 측이 SQLite cases로 폴백하게 한다.
-async function readClientsFromExternalSheet() {
-  const authRow = getStoredGoogleAuth();
-  if (!authRow || !authRow.sheets_spreadsheet_id || !authRow.clients_sheet_tab) return null;
-
-  const client = await getSheetsAuthorizedClient();
-  if (!client) return null;
-
-  const sheets = google.sheets({ version: 'v4', auth: client });
-  const resp = await sheets.spreadsheets.values.get({
-    spreadsheetId: authRow.sheets_spreadsheet_id,
-    range: `${authRow.clients_sheet_tab}!A2:E100000`,
-  });
-  const rows = resp.data.values || [];
-
-  const clients = [];
-  rows.forEach((row, i) => {
-    // A=순번, B=이름, C=전화번호, D=법원, E=사건번호
-    const [, name, phone, court, courtCaseNo] = row;
-    if (!name) return;
-    clients.push({
-      id: `client-${i}`,
-      _sortKey: i,
-      source: 'external-client',
-      client_name: name,
-      phone: phone || '',
-      court: court || '',
-      court_case_no: courtCaseNo || '',
-      assignee_name: '',
-    });
-  });
-  return clients;
-}
-
-// 사건 매칭에 쓸 후보 목록을 가져온다: 외부 의뢰인 명단이 연결돼 있으면 그걸 우선 쓰고,
-// 아니면 앱 자체 SQLite cases 테이블로 폴백한다 (기존 동작과 동일하게 유지).
+// 사건 매칭에 쓸 후보 목록: 앱 자체 SQLite cases 테이블 (2026-08부터 유일한 원본).
+// (예전엔 외부 "의뢰인 명단" 구글시트를 우선 썼지만, 그 연동 기능 자체를 제거했다.)
 async function getMatchCandidates() {
-  const external = await readClientsFromExternalSheet();
-  if (external) return external;
   return db.prepare('SELECT * FROM cases').all().map((c) => Object.assign({ _sortKey: c.id }, c));
 }
 
@@ -1801,8 +1763,6 @@ app.get('/api/sheets/status', requireLogin, (req, res) => {
     url: spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : null,
     lastSyncedAt: (row && row.sheets_last_synced_at) || null,
     tasksManagedInSheet: !!(row && row.tasks_source === 'sheet'),
-    clientsConnected: !!(row && row.clients_sheet_tab),
-    clientsTab: (row && row.clients_sheet_tab) || null,
   });
 });
 
@@ -1816,85 +1776,9 @@ app.post('/api/sheets/export', requireAdmin, async (req, res) => {
   }
 });
 
-/* ---- /api/clients (기존에 만들어둔 외부 "의뢰인 명단" 구글시트 연동) ---- */
+// (2026-08: "의뢰인 시트 연결" 기능 자체를 제거했다. 의뢰인목록은 이제 SQLite cases만 본다.)
 
-// 관리자가 이미 갖고 있는 스프레드시트(예: [법진 사건관리])의 의뢰인 명단 탭을 연결한다.
-// 1) 그 탭이 실제로 읽히는지 확인하고, 2) 같은 스프레드시트 안에 새 일정을 append할
-// [일정_보정관리] 탭이 없으면 헤더와 함께 새로 만든 뒤, 3) 연동 정보를 저장한다.
-// 의뢰인 명단 탭(예: 시트1)은 절대 건드리지 않는다 (읽기 전용, 보통 IMPORTRANGE로 채워져 있음).
-app.post('/api/admin/clients-sheet', requireAdmin, async (req, res) => {
-  const { url, tab } = req.body || {};
-  const m = String(url || '').match(/\/d\/([a-zA-Z0-9_-]+)/);
-  if (!m) return res.status(400).json({ error: '구글시트 주소가 올바르지 않습니다. 브라우저 주소창의 전체 링크를 붙여넣어주세요.' });
-  const spreadsheetId = m[1];
-  const tabName = (tab || '시트1').trim();
-
-  try {
-    const client = await getSheetsAuthorizedClient();
-    if (!client) {
-      const err = new Error('구글 계정이 연동되어 있지 않습니다. 먼저 구글 캘린더 연동을 진행해주세요.');
-      err.code = 'NOT_CONNECTED';
-      throw err;
-    }
-    const sheets = google.sheets({ version: 'v4', auth: client });
-
-    // 1) 의뢰인 명단 탭이 실제로 읽히는지 확인
-    const clientsResp = await sheets.spreadsheets.values.get({
-      spreadsheetId, range: `${tabName}!A2:E100000`,
-    });
-    const clientCount = (clientsResp.data.values || []).filter((r) => r[1]).length;
-    if (!clientCount) {
-      return res.status(400).json({ error: `"${tabName}" 탭에서 의뢰인 이름(B열)을 하나도 찾지 못했습니다. 탭 이름이나 열 구성을 확인해주세요.` });
-    }
-
-    // 2) 일정_보정관리 탭이 없으면 새로 생성 (기존 탭은 절대 건드리지 않음)
-    const meta = await sheets.spreadsheets.get({ spreadsheetId });
-    const hasTasksTab = meta.data.sheets.some((s) => s.properties.title === SHEETS_TITLE_TASKS);
-    if (!hasTasksTab) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId, requestBody: { requests: [{ addSheet: { properties: { title: SHEETS_TITLE_TASKS } } }] },
-      });
-      await sheets.spreadsheets.values.update({
-        spreadsheetId, range: `${SHEETS_TITLE_TASKS}!A1`, valueInputOption: 'RAW', requestBody: { values: [TASKS_SHEET_HEADER] },
-      });
-    }
-
-    // 3) 연동 정보 저장
-    db.prepare("UPDATE google_auth SET sheets_spreadsheet_id = ?, clients_sheet_tab = ?, tasks_source = 'sheet' WHERE id = 1")
-      .run(spreadsheetId, tabName);
-
-    res.json({ ok: true, clientCount, tab: tabName, tasksTabCreated: !hasTasksTab });
-  } catch (err) {
-    if (err.code === 'NOT_CONNECTED') return res.status(400).json({ error: err.message, code: err.code });
-    // 기존에 연동된 계정이 (구)캘린더 권한만 갖고 있어 시트 권한 자체가 없는 경우 (공유 문제와는 다름)
-    if (/insufficient.*scope|insufficient authentication scopes/i.test(err.message || '')) {
-      return res.status(403).json({
-        error: '구글 계정에 스프레드시트 권한이 없습니다. "구글 캘린더 연동"에서 "다시 연결하기"를 눌러 재연동해주세요 (시트 권한이 추가되었습니다).',
-        code: 'NEEDS_RECONSENT',
-      });
-    }
-    // 구글 클라우드 프로젝트에서 Sheets API 자체가 비활성화된 경우 (공유 문제와 무관)
-    if (/has not been used in project|it is disabled|SERVICE_DISABLED|accessNotConfigured/i.test(err.message || '')) {
-      return res.status(403).json({
-        error: '구글 클라우드 프로젝트에서 "Google Sheets API"가 비활성화되어 있습니다. 개발자에게 Google Cloud Console에서 Sheets API를 활성화해달라고 요청해주세요. (상세: ' + err.message + ')',
-        code: 'API_DISABLED',
-      });
-    }
-    if (err.code === 403 || /permission/i.test(err.message || '')) {
-      return res.status(403).json({
-        error: '이 스프레드시트에 대한 접근 권한이 없습니다. 구글 캘린더 연동에 사용 중인 계정과 이 시트를 공유(편집자 권한)해주세요. (상세: ' + (err.message || '') + ')',
-        code: 'NO_ACCESS',
-      });
-    }
-    if (/Unable to parse range|not found/i.test(err.message || '')) {
-      return res.status(400).json({ error: `"${tabName}" 이라는 이름의 탭을 찾을 수 없습니다. 탭 이름을 다시 확인해주세요.` });
-    }
-    console.error('의뢰인 시트 연결 실패:', err.message);
-    res.status(500).json({ error: '연결 중 오류가 발생했습니다: ' + err.message });
-  }
-});
-
-// 인감도장/공동인증서 USB 수령 여부는 앱 자체 SQLite에 보관 (원본 시트는 읽기 전용이라 쓸 수 없음).
+// 인감도장/공동인증서 USB 수령 여부는 앱 자체 SQLite에 보관.
 function getClientDocs(clientName, courtCaseNo) {
   return db.prepare('SELECT * FROM client_documents WHERE client_name_key = ? AND court_case_no_key = ?')
     .get(normalizeMatchKey(clientName), normalizeMatchKey(courtCaseNo));
@@ -1939,88 +1823,8 @@ app.get('/api/clients', requireLogin, (req, res) => {
   }
 });
 
-// ── 의뢰인 명단(외부 구글시트) → 앱(SQLite cases) 완전 이식 (1회성) ───────────────
-// 더 이상 아무도 채워넣지 않는 시트이므로, 시트에만 있던 정보(연락처/법원/사건번호)를
-// cases 테이블로 옮겨 담아 /api/clients가 시트를 전혀 읽지 않아도 되게 만든다.
-// - 이미 매칭되는 사건이 있으면: 비어있는 필드만 시트 값으로 채운다 (사건상세에서 이미
-//   입력해둔 값은 절대 덮어쓰지 않는다 - 원칙 11: 데이터는 절대 잃지 않는다).
-// - 매칭되는 사건이 없으면: 새 사건을 만들고 상태를 "사건진행중"(이미 계약된 의뢰인)으로 시작한다.
-async function computeClientsMigrationPlan() {
-  const sheetClients = await readClientsFromExternalSheet();
-  if (!sheetClients) { throw new Error('의뢰인 명단 시트가 연동되어 있지 않습니다.'); }
-  const existingCases = db.prepare('SELECT * FROM cases').all().map((r) => Object.assign({ _sortKey: r.id }, r));
-
-  const toUpdate = [];
-  const toCreate = [];
-
-  sheetClients.forEach((sc) => {
-    const matched = matchCaseByNameAndCaseNo(existingCases, sc.client_name, sc.court_case_no);
-    if (matched) {
-      const fill = {};
-      if (!matched.phone && sc.phone) fill.phone = sc.phone;
-      if (!matched.court && sc.court) fill.court = sc.court;
-      if (!matched.court_case_no && sc.court_case_no) fill.court_case_no = sc.court_case_no;
-      // status가 아예 비어있는(NULL) 옛날 사건은, status 개념이 생기기 전에 만들어졌을 뿐 의뢰인
-      // 명단에는 이미 있던 정식 의뢰인이므로 "사건진행중"으로 채워서 의뢰인목록에서 안 사라지게 한다.
-      if (!matched.status) fill.status = '사건진행중';
-      if (Object.keys(fill).length) toUpdate.push({ caseId: matched.id, name: sc.client_name, fill });
-    } else {
-      toCreate.push({ name: sc.client_name, phone: sc.phone || '', court: sc.court || '', court_case_no: sc.court_case_no || '' });
-    }
-  });
-
-  return { toUpdate, toCreate, totalSheetClients: sheetClients.length };
-}
-
-app.get('/api/admin/clients-migration-preview', requireAdmin, async (req, res) => {
-  try {
-    const { toUpdate, toCreate, totalSheetClients } = await computeClientsMigrationPlan();
-    res.json({
-      totalSheetClients,
-      willUpdateCount: toUpdate.length,
-      willCreateCount: toCreate.length,
-      willUpdateSample: toUpdate.slice(0, 10),
-      willCreateSample: toCreate.slice(0, 10),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/admin/clients-migration-run', requireAdmin, async (req, res) => {
-  try {
-    const { toUpdate, toCreate } = await computeClientsMigrationPlan();
-    let updated = 0;
-    let created = 0;
-
-    toUpdate.forEach((u) => {
-      // 실행 시점에 다시 한 번 확인: 그 사이 사건상세에서 값이 채워졌으면 덮어쓰지 않는다.
-      const fresh = db.prepare('SELECT * FROM cases WHERE id = ?').get(u.caseId);
-      if (!fresh) return;
-      const fields = [];
-      const values = [];
-      if (u.fill.phone && !fresh.phone) { fields.push('phone = ?'); values.push(u.fill.phone); }
-      if (u.fill.court && !fresh.court) { fields.push('court = ?'); values.push(u.fill.court); }
-      if (u.fill.court_case_no && !fresh.court_case_no) { fields.push('court_case_no = ?'); values.push(u.fill.court_case_no); }
-      if (u.fill.status && !fresh.status) { fields.push('status = ?'); values.push(u.fill.status); }
-      if (!fields.length) return;
-      values.push(u.caseId);
-      db.prepare(`UPDATE cases SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-      updated++;
-    });
-
-    toCreate.forEach((c) => {
-      db.prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by)
-                  VALUES (?, ?, ?, ?, '', '', '', '', '', '', '사건진행중', ?)`)
-        .run(c.name, c.phone, c.court, c.court_case_no, req.user.id);
-      created++;
-    });
-
-    res.json({ updated, created });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// (2026-08: 의뢰인 명단 외부 시트 → SQLite 1회성 이식은 완료되어 관련 임시 API를 제거했다.
+//  이제 /api/clients는 위에서 보듯 cases 테이블만 본다.)
 
 // 인감도장/공동인증서 USB 수령 여부를 저장한다 (의뢰인명+사건번호로 upsert).
 app.post('/api/clients/documents', requireLogin, (req, res) => {
@@ -2083,8 +1887,8 @@ app.post('/api/clients/open-case', requireLogin, (req, res) => {
 
 // addSchedule() 역할: 선택한 의뢰인 정보 + 할 일 + 마감일을 등록한다.
 // tasks_source가 'sheet'이면 예전처럼 [일정_보정관리] 탭 맨 아래에 행을 추가하고,
-// 'app'(전환 후)이면 사건을 찾거나 새로 만든 뒤 case_tasks에 바로 저장한다.
-// (의뢰인 자동완성은 여전히 연동된 의뢰인 명단 시트를 쓰므로 clients_sheet_tab 요구사항은 그대로 유지)
+// 'app'(전환 후, 기본값)이면 사건을 찾거나 새로 만든 뒤 case_tasks에 바로 저장한다.
+// (의뢰인 자동완성은 이제 SQLite cases만 쓰므로 구글시트 연동 여부와 무관하게 항상 동작한다.)
 app.post('/api/clients/schedule', requireLogin, async (req, res) => {
   const { client_name, court_case_no, task_type, due_date, received_date, assignee_name, memo } = req.body || {};
   if (!client_name || !task_type || !due_date) {
@@ -2092,11 +1896,8 @@ app.post('/api/clients/schedule', requireLogin, async (req, res) => {
   }
 
   const authRow = getStoredGoogleAuth();
-  if (!authRow || !authRow.sheets_spreadsheet_id || !authRow.clients_sheet_tab) {
-    return res.status(400).json({ error: '의뢰인 시트가 아직 연동되어 있지 않습니다.', code: 'NOT_CONNECTED' });
-  }
 
-  if (authRow.tasks_source !== 'sheet') {
+  if (!authRow || authRow.tasks_source !== 'sheet') {
     // 앱(SQLite)이 원본: 사건을 찾거나 새로 만들고 case_tasks에 바로 저장한다.
     const cases = db.prepare('SELECT * FROM cases').all().map((c) => Object.assign({ _sortKey: c.id }, c));
     let matchedCase = matchCaseByNameAndCaseNo(cases, client_name, court_case_no);

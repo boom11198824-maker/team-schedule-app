@@ -139,20 +139,6 @@ main { max-width: 760px; margin: 0 auto; padding: 20px 20px 80px; }
     </div>
 
     <div class="card">
-      <h3>의뢰인 시트 연결</h3>
-      <p class="desc">구글시트의 의뢰인 명단 탭을 읽기 전용으로 연결합니다. 의뢰인 목록·사건 매칭에 사용됩니다.</p>
-      <div class="status-row">
-        <span class="label">연결 상태</span>
-        <span class="value"><span id="g-clients-badge" class="badge badge-off">확인 중...</span></span>
-      </div>
-      <div class="status-row">
-        <span class="label">연결된 탭</span>
-        <span class="value" id="g-clients-tab">-</span>
-      </div>
-      <a href="/cases.html?open=clientsSheet" class="btn-secondary" style="margin-top:14px; display:inline-block;">사건관리에서 연결 관리 →</a>
-    </div>
-
-    <div class="card">
       <h3>서류·보정 일정 관리 방식</h3>
       <p class="desc">서류 제출/보정 일정(업무)을 구글시트에서 관리할지, 앱에서 직접 관리할지 정합니다. 앱으로 전환하면 완료 처리·수정·삭제가 앱에서 바로 가능해집니다. 전환 시 시트에 남아있던 일정은 모두 앱으로 옮겨지고, 시트 자체는 지워지지 않습니다.</p>
       <div class="status-row">
@@ -240,8 +226,6 @@ async function loadGoogleStatus() {
 async function loadSheetsStatus() {
   try {
     const status = await api('/api/sheets/status');
-    setBadge(document.getElementById('g-clients-badge'), status.clientsConnected, '연결됨', '연결 안 됨');
-    document.getElementById('g-clients-tab').textContent = status.clientsTab || '-';
     setBadge(document.getElementById('g-export-badge'), status.exported, '내보냄', '내보낸 적 없음');
     document.getElementById('g-export-synced').textContent = status.lastSyncedAt ? status.lastSyncedAt.slice(0, 16).replace('T', ' ') : '-';
 
@@ -259,7 +243,6 @@ async function loadSheetsStatus() {
       btn.classList.add('hidden');
     }
   } catch {
-    setBadge(document.getElementById('g-clients-badge'), false, '연결됨', '확인 실패');
     setBadge(document.getElementById('g-export-badge'), false, '내보냄', '확인 실패');
   }
 }

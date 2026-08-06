@@ -273,9 +273,8 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
     <div class="topbar-right">
       <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
       <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
-      <a id="btn-client-search" href="/clients.html" class="btn-secondary" style="display:none">📋 의뢰인 목록</a>
+      <a id="btn-client-search" href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
-      <button id="btn-clients-sheet" class="btn-secondary" style="display:none">📋 의뢰인 시트 연결</button>
       <button id="btn-sheets-export" class="btn-secondary" style="display:none">📊 구글시트로 내보내기</button>
       <span id="user-name" class="user-name"></span>
       <button id="btn-logout" class="btn-secondary">로그아웃</button>
@@ -429,25 +428,6 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
         <button type="button" class="btn-secondary" id="btn-add-schedule-for-client">+ 일정 추가</button>
         <button type="button" class="btn-secondary" id="btn-open-case-detail">사건상세 페이지 열기 →</button>
         <button type="button" class="btn-primary" id="btn-save-client-docs">저장</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 관리자: 의뢰인 명단 구글시트 연결 -->
-  <div id="clients-sheet-modal" class="modal-backdrop hidden">
-    <div class="modal">
-      <h2>📋 의뢰인 시트 연결</h2>
-      <p class="empty-note" style="text-align:left; padding:0 0 8px;">이미 만들어두신 구글시트의 의뢰인 명단 탭을 연결합니다. 이 탭은 앱에서 읽기만 하고 절대 수정하지 않습니다.</p>
-      <p id="clients-sheet-account-hint" class="empty-note" style="text-align:left; padding:0 0 8px; color:var(--brand-coral, #ff6452);"></p>
-      <label>구글시트 주소 *</label>
-      <input type="text" id="clients-sheet-url" placeholder="https://docs.google.com/spreadsheets/d/..." />
-      <label>의뢰인 명단 탭 이름</label>
-      <input type="text" id="clients-sheet-tab" placeholder="시트1" value="시트1" />
-      <p id="clients-sheet-error" class="error-text"></p>
-      <div class="modal-actions">
-        <div class="spacer"></div>
-        <button type="button" class="btn-secondary" id="btn-cancel-clients-sheet">닫기</button>
-        <button type="button" class="btn-primary" id="btn-save-clients-sheet">연결</button>
       </div>
     </div>
   </div>
@@ -767,14 +747,13 @@ function formatSyncedAt(iso) {
   return `${p.y}.${String(p.mo).padStart(2,'0')}.${String(p.da).padStart(2,'0')} ${String(p.h).padStart(2,'0')}:${String(p.mi).padStart(2,'0')}`;
 }
 
-let sheetsStatus = { exported: false, url: null, tasksManagedInSheet: false, clientsConnected: false };
+let sheetsStatus = { exported: false, url: null, tasksManagedInSheet: false };
 
 async function refreshSheetsStatus() {
   const statusEl = document.getElementById('sheets-status');
   try {
     sheetsStatus = await api('/api/sheets/status');
     const parts = [];
-    if (sheetsStatus.clientsConnected) parts.push(`👤 의뢰인 명단 연동 중 (탭: ${sheetsStatus.clientsTab})`);
     if (sheetsStatus.exported) {
       const managedNote = sheetsStatus.tasksManagedInSheet ? ' · 서류·보정 일정은 시트에서 직접 관리 중' : '';
       parts.push(`📊 <a href="${sheetsStatus.url}" target="_blank" rel="noopener">구글시트에서 보기</a> · 마지막 동기화: ${formatSyncedAt(sheetsStatus.lastSyncedAt)}${managedNote}`);
@@ -785,11 +764,10 @@ async function refreshSheetsStatus() {
     } else {
       statusEl.classList.add('hidden');
     }
-    document.getElementById('btn-client-search').style.display = sheetsStatus.clientsConnected ? 'inline-block' : 'none';
   } catch { statusEl.classList.add('hidden'); }
 }
 
-/* ---- 의뢰인 명단 시트 연동 (getClients / addSchedule 역할) ---- */
+/* ---- 의뢰인 목록 (getClients / addSchedule 역할, SQLite cases 기반) ---- */
 
 let allClients = [];
 
@@ -865,10 +843,6 @@ function closeScheduleModal() {
 }
 
 document.getElementById('btn-new-schedule').addEventListener('click', async () => {
-  if (!sheetsStatus.clientsConnected) {
-    alert('먼저 관리자에게 "📋 의뢰인 시트 연결"을 요청해주세요.');
-    return;
-  }
   await loadClients();
   openScheduleModal(null);
 });
@@ -1029,57 +1003,6 @@ document.getElementById('btn-save-client-docs').addEventListener('click', async 
   }
 });
 
-/* ---- 관리자: 의뢰인 명단 구글시트 연결 ---- */
-
-document.getElementById('btn-clients-sheet').addEventListener('click', async () => {
-  document.getElementById('clients-sheet-error').textContent = '';
-  if (sheetsStatus.clientsConnected) {
-    document.getElementById('clients-sheet-tab').value = sheetsStatus.clientsTab || '시트1';
-  }
-  const hintEl = document.getElementById('clients-sheet-account-hint');
-  hintEl.textContent = '연동된 구글 계정 확인 중...';
-  document.getElementById('clients-sheet-modal').classList.remove('hidden');
-  try {
-    const who = await api('/api/google/whoami');
-    hintEl.textContent = who.email
-      ? `⚠ 이 구글 계정(${who.email})에 시트를 "편집자"로 공유해야 연결됩니다.`
-      : '';
-  } catch (e) {
-    if (e.message && e.message.includes('연동되어 있지 않')) {
-      hintEl.textContent = '⚠ 먼저 "구글 캘린더 연동"을 완료해주세요 (팀 스케줄 화면).';
-    } else if (e.message && e.message.includes('다시 연동')) {
-      hintEl.textContent = '⚠ ' + e.message;
-    } else {
-      hintEl.textContent = '';
-    }
-  }
-});
-document.getElementById('btn-cancel-clients-sheet').addEventListener('click', () => {
-  document.getElementById('clients-sheet-modal').classList.add('hidden');
-});
-document.getElementById('btn-save-clients-sheet').addEventListener('click', async () => {
-  const errorEl = document.getElementById('clients-sheet-error');
-  errorEl.textContent = '';
-  const url = document.getElementById('clients-sheet-url').value.trim();
-  const tab = document.getElementById('clients-sheet-tab').value.trim() || '시트1';
-  if (!url) { errorEl.textContent = '구글시트 주소를 입력해주세요.'; return; }
-
-  const btn = document.getElementById('btn-save-clients-sheet');
-  btn.disabled = true;
-  try {
-    const result = await api('/api/admin/clients-sheet', { method: 'POST', body: JSON.stringify({ url, tab }) });
-    document.getElementById('clients-sheet-modal').classList.add('hidden');
-    await refreshSheetsStatus();
-    await loadClients();
-    await loadAll();
-    alert(`✅ 연결되었습니다. 의뢰인 ${result.clientCount}명을 찾았습니다.${result.tasksTabCreated ? '\n(일정_보정관리 탭을 새로 만들었습니다)' : ''}`);
-  } catch (err) {
-    errorEl.textContent = err.message;
-  } finally {
-    btn.disabled = false;
-  }
-});
-
 document.getElementById('btn-sheets-export').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   const original = btn.textContent;
@@ -1110,11 +1033,10 @@ async function init() {
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
   if (currentUser.role === 'admin') {
     document.getElementById('btn-sheets-export').style.display = 'inline-block';
-    document.getElementById('btn-clients-sheet').style.display = 'inline-block';
     document.getElementById('nav-settings').style.display = 'inline-block';
   }
   await refreshSheetsStatus();
-  if (sheetsStatus.clientsConnected) await loadClients();
+  await loadClients();
   await loadAll();
 
   // 의뢰인 목록(clients.html)에서 "+ 일정 추가"로 넘어온 경우 새 일정 등록 모달을 바로 열어준다.
@@ -1128,10 +1050,7 @@ async function init() {
     history.replaceState(null, '', '/cases.html');
   }
   // 설정 페이지에서 "여기서 관리하기" 버튼으로 넘어온 경우 해당 모달을 바로 열어준다.
-  if (params.get('open') === 'clientsSheet' && currentUser.role === 'admin') {
-    document.getElementById('btn-clients-sheet').click();
-    history.replaceState(null, '', '/cases.html');
-  } else if (params.get('open') === 'sheetsExport' && currentUser.role === 'admin') {
+  if (params.get('open') === 'sheetsExport' && currentUser.role === 'admin') {
     document.getElementById('btn-sheets-export').click();
     history.replaceState(null, '', '/cases.html');
   }

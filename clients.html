@@ -66,6 +66,11 @@ button.btn-primary {
   font-size: 14px; font-weight: 600; cursor: pointer;
 }
 button.btn-primary:hover { background: var(--brand-coral-dark); }
+button.btn-danger {
+  background: #fbe4e4; color: #b23a3a; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-danger:hover { background: #f7d0d0; }
 button.btn-small {
   font-size: 12px; padding: 5px 9px; border-radius: 6px; cursor: pointer;
   border: 1px solid var(--border); background: var(--card-surface); color: var(--text-secondary);
@@ -214,7 +219,9 @@ table.client-table td.muted { color: var(--text-muted); }
       <p id="ci-task-empty" class="empty-note hidden" style="padding:6px 0;">관련 일정이 없습니다.</p>
 
       <p id="ci-open-case-error" class="error-text"></p>
+      <p id="ci-delete-error" class="error-text"></p>
       <div class="modal-actions">
+        <button type="button" class="btn-danger" id="btn-delete-client">의뢰인 삭제</button>
         <div class="spacer"></div>
         <button type="button" class="btn-secondary" id="btn-close-client-info">닫기</button>
         <button type="button" class="btn-secondary" id="btn-add-schedule-for-client">+ 일정 추가</button>
@@ -361,6 +368,24 @@ function openClientInfoModal(c) {
       caseno: c.court_case_no || '',
     });
     window.location.href = '/cases.html?' + params.toString();
+  };
+
+  const deleteErrorEl = document.getElementById('ci-delete-error');
+  deleteErrorEl.textContent = '';
+  document.getElementById('btn-delete-client').onclick = async () => {
+    if (!c.case_id) { deleteErrorEl.textContent = '연결된 사건 정보가 없어 삭제할 수 없습니다.'; return; }
+    if (!confirm(`${c.client_name || '이 의뢰인'}의 사건과 관련된 모든 일정·수임료·서류 정보를 삭제할까요?\n(구글 캘린더에 등록된 일정도 함께 삭제되며, 되돌릴 수 없습니다)`)) return;
+    const btn = document.getElementById('btn-delete-client');
+    btn.disabled = true;
+    try {
+      await api(`/api/cases/${c.case_id}`, { method: 'DELETE' });
+      document.getElementById('client-info-modal').classList.add('hidden');
+      allClients = allClients.filter((x) => x.id !== c.id);
+      renderClientTable(document.getElementById('client-search-input').value);
+    } catch (err) {
+      deleteErrorEl.textContent = err.message;
+      btn.disabled = false;
+    }
   };
 
   const openCaseErrorEl = document.getElementById('ci-open-case-error');

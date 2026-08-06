@@ -178,7 +178,7 @@ for (const col of [
   'case_type TEXT', 'intake_date TEXT', 'assigned_lawyer TEXT', 'current_stage TEXT', 'status TEXT',
   'seal_received INTEGER NOT NULL DEFAULT 0', 'seal_received_date TEXT',
   'cert_usb_received INTEGER NOT NULL DEFAULT 0', 'cert_usb_received_date TEXT',
-  'updated_at TEXT',
+  'updated_at TEXT', 'retainer_date TEXT',
 ]) {
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
@@ -188,6 +188,10 @@ for (const col of [
 }
 // updated_at이 없는 기존 사건은 등록일로 백필 (의뢰인 목록을 "최근 변경순"으로 보여주기 위해 필요).
 db.exec("UPDATE cases SET updated_at = created_at WHERE updated_at IS NULL");
+
+// retainer_date(수임일자): 접수일(intake_date, 법원 접수 시점)과는 다른 개념 — 의뢰인과 실제
+// 수임계약을 맺은 날짜. "수임료 관리" 구글시트(FEE_MIGRATION_SPREADSHEET_ID) D열이 원본이며,
+// /api/admin/retainer-date-migration-run으로 1회 이식한다. 의뢰인목록 정렬 기준으로 쓴다.
 
 // 상담레포트 등 사건(=상담/의뢰인)에 첨부하는 문서 파일. 실제 파일은 DATA_DIR(영구 디스크) 아래에
 // 저장하고, 이 테이블에는 메타데이터만 보관한다 (문서는 자산이므로 삭제를 전제로 하지 않는다).
@@ -1687,6 +1691,38 @@ app.post('/api/admin/fee-migration-run', requireAdmin, async (req, res) => {
   }
 });
 
+// (일회성) 의뢰인목록 정렬용 수임일자(retainer_date) 이식.
+// "수임료 관리" 시트 D열(수임일자)을 이름으로 매칭해서 cases.retainer_date에 채워 넣는다.
+// 다시 실행해도 안전하다(매번 시트 값으로 덮어씀 - 시트가 원본이므로).
+app.post('/api/admin/retainer-date-migration-run', requireAdmin, async (req, res) => {
+  try {
+    const client = await getSheetsAuthorizedClient();
+    if (!client) return res.status(400).json({ error: '구글 계정이 연동되어 있지 않습니다.' });
+    const sheets = google.sheets({ version: 'v4', auth: client });
+    const result = await sheets.spreadsheets.values.get({ spreadsheetId: FEE_MIGRATION_SPREADSHEET_ID, range: 'A1:AR200' });
+    const rows = result.data.values || [];
+    const sheetClients = parseFeeSheetRows(rows);
+
+    let matched = 0;
+    let noDate = 0;
+    const notFound = [];
+
+    sheetClients.forEach((c) => {
+      if (!c.engagementDate) { noDate++; return; }
+      // 매번 최신 사건 목록으로 매칭 (이름 중복 시 court_case_no까지 봐야 하므로).
+      const existingCases = db.prepare('SELECT * FROM cases').all().map((r) => Object.assign({ _sortKey: r.id }, r));
+      const matchedCase = matchCaseByNameAndCaseNo(existingCases, c.name, '');
+      if (!matchedCase) { notFound.push(c.name); return; }
+      db.prepare('UPDATE cases SET retainer_date = ? WHERE id = ?').run(c.engagementDate, matchedCase.id);
+      matched++;
+    });
+
+    res.json({ totalInSheet: sheetClients.length, matched, noDate, notFoundCount: notFound.length, notFound });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 사건유형(개인회생/개인파산) 추정: 진홍 님 말씀대로 파산은 보통 5회차까지, 회생은 보통 4회차까지
 // 납부받는다는 실무 규칙을 이용해, 시트의 회차 개수로 사건유형을 추측한다.
 // "보통"이라는 표현대로 100% 확실한 규칙은 아니라서, 이미 사건유형이 채워진 사건은 절대 건드리지 않고
@@ -1805,13 +1841,16 @@ const CONTRACTED_CASE_STATUSES = ['사건진행중', '개시결정후'];
 // (2026-08: 의뢰인 명단 외부 구글시트는 더 이상 갱신되지 않아 완전히 폐기하고, 앱 SQLite의 cases
 //  테이블 하나만을 단일 원본으로 사용한다 - "하나의 플랫폼 / SQLite 단일 데이터베이스" 원칙.
 //  상담관리에서 상태를 "사건진행중"/"개시결정후"로 바꾸는 순간 여기 자동으로 나타난다.
-//  정렬은 "최근 변경순"(updated_at DESC) - 사건을 처음 등록한 시점이 오래됐어도(예: 상담만
-//  받다가 한참 뒤에 계약하는 경우) 방금 계약/수정된 의뢰인이 맨 위에 오도록 한다.)
+//  정렬은 "수임일자(retainer_date) 역순" - 실제 계약 순서를 반영한다. retainer_date가 없는
+//  의뢰인(= 수임료 시트 이식 이후 상담관리에서 새로 계약 전환된 신규 의뢰인)은 항상 맨 위로
+//  올라온다 - "무조건 맨처음 뜨도록" 요청사항. 그 안에서는 updated_at(최근 변경순)으로 정렬.)
 app.get('/api/clients', requireLogin, (req, res) => {
   try {
     const placeholders = CONTRACTED_CASE_STATUSES.map(() => '?').join(', ');
-    const cases = db.prepare(`SELECT * FROM cases WHERE status IN (${placeholders}) ORDER BY updated_at DESC, id DESC`)
-      .all(...CONTRACTED_CASE_STATUSES);
+    const cases = db.prepare(`
+      SELECT * FROM cases WHERE status IN (${placeholders})
+      ORDER BY (retainer_date IS NULL OR retainer_date = '') DESC, retainer_date DESC, updated_at DESC, id DESC
+    `).all(...CONTRACTED_CASE_STATUSES);
     const clients = cases.map((c) => attachClientDocs({
       id: `case-${c.id}`,
       case_id: c.id,
@@ -1830,21 +1869,6 @@ app.get('/api/clients', requireLogin, (req, res) => {
 
 // (2026-08: 의뢰인 명단 외부 시트 → SQLite 1회성 이식은 완료되어 관련 임시 API를 제거했다.
 //  이제 /api/clients는 위에서 보듯 cases 테이블만 본다.)
-
-// (일회성) updated_at 정렬 도입 직후 보정용 API. 이 앱 자체가 2026-08-03부터 만들어지면서
-// 기존 의뢰인들의 사건 레코드가 실제 계약일과 무관하게 며칠 새 한꺼번에 입력돼, updated_at
-// 백필값(=등록일)이 실제 계약일 순서를 반영하지 못하는 경우가 있다. 그런 의뢰인만 실제
-// 계약일로 updated_at을 1회 보정한다. 목적을 다하면 다음 커밋에서 제거한다.
-app.post('/api/admin/fix-case-updated-at', requireAdmin, (req, res) => {
-  const { fixes } = req.body || {}; // [{ client_name, date: 'YYYY-MM-DD' }]
-  if (!Array.isArray(fixes) || !fixes.length) return res.status(400).json({ error: 'fixes 배열이 필요합니다.' });
-  const results = fixes.map((f) => {
-    if (!f.client_name || !f.date) return { client_name: f.client_name, changed: 0, skipped: true };
-    const info = db.prepare('UPDATE cases SET updated_at = ? WHERE client_name = ?').run(`${f.date} 00:00:00`, f.client_name);
-    return { client_name: f.client_name, changed: info.changes };
-  });
-  res.json({ results });
-});
 
 // 인감도장/공동인증서 USB 수령 여부를 저장한다 (의뢰인명+사건번호로 upsert).
 app.post('/api/clients/documents', requireLogin, (req, res) => {

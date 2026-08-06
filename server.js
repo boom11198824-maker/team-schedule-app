@@ -1960,6 +1960,9 @@ async function computeClientsMigrationPlan() {
       if (!matched.phone && sc.phone) fill.phone = sc.phone;
       if (!matched.court && sc.court) fill.court = sc.court;
       if (!matched.court_case_no && sc.court_case_no) fill.court_case_no = sc.court_case_no;
+      // status가 아예 비어있는(NULL) 옛날 사건은, status 개념이 생기기 전에 만들어졌을 뿐 의뢰인
+      // 명단에는 이미 있던 정식 의뢰인이므로 "사건진행중"으로 채워서 의뢰인목록에서 안 사라지게 한다.
+      if (!matched.status) fill.status = '사건진행중';
       if (Object.keys(fill).length) toUpdate.push({ caseId: matched.id, name: sc.client_name, fill });
     } else {
       toCreate.push({ name: sc.client_name, phone: sc.phone || '', court: sc.court || '', court_case_no: sc.court_case_no || '' });
@@ -1999,6 +2002,7 @@ app.post('/api/admin/clients-migration-run', requireAdmin, async (req, res) => {
       if (u.fill.phone && !fresh.phone) { fields.push('phone = ?'); values.push(u.fill.phone); }
       if (u.fill.court && !fresh.court) { fields.push('court = ?'); values.push(u.fill.court); }
       if (u.fill.court_case_no && !fresh.court_case_no) { fields.push('court_case_no = ?'); values.push(u.fill.court_case_no); }
+      if (u.fill.status && !fresh.status) { fields.push('status = ?'); values.push(u.fill.status); }
       if (!fields.length) return;
       values.push(u.caseId);
       db.prepare(`UPDATE cases SET ${fields.join(', ')} WHERE id = ?`).run(...values);

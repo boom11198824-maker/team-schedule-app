@@ -1831,6 +1831,21 @@ app.get('/api/clients', requireLogin, (req, res) => {
 // (2026-08: 의뢰인 명단 외부 시트 → SQLite 1회성 이식은 완료되어 관련 임시 API를 제거했다.
 //  이제 /api/clients는 위에서 보듯 cases 테이블만 본다.)
 
+// (일회성) updated_at 정렬 도입 직후 보정용 API. 이 앱 자체가 2026-08-03부터 만들어지면서
+// 기존 의뢰인들의 사건 레코드가 실제 계약일과 무관하게 며칠 새 한꺼번에 입력돼, updated_at
+// 백필값(=등록일)이 실제 계약일 순서를 반영하지 못하는 경우가 있다. 그런 의뢰인만 실제
+// 계약일로 updated_at을 1회 보정한다. 목적을 다하면 다음 커밋에서 제거한다.
+app.post('/api/admin/fix-case-updated-at', requireAdmin, (req, res) => {
+  const { fixes } = req.body || {}; // [{ client_name, date: 'YYYY-MM-DD' }]
+  if (!Array.isArray(fixes) || !fixes.length) return res.status(400).json({ error: 'fixes 배열이 필요합니다.' });
+  const results = fixes.map((f) => {
+    if (!f.client_name || !f.date) return { client_name: f.client_name, changed: 0, skipped: true };
+    const info = db.prepare('UPDATE cases SET updated_at = ? WHERE client_name = ?').run(`${f.date} 00:00:00`, f.client_name);
+    return { client_name: f.client_name, changed: info.changes };
+  });
+  res.json({ results });
+});
+
 // 인감도장/공동인증서 USB 수령 여부를 저장한다 (의뢰인명+사건번호로 upsert).
 app.post('/api/clients/documents', requireLogin, (req, res) => {
   const { client_name, court_case_no, seal_received, seal_received_date, cert_usb_received, cert_usb_received_date } = req.body || {};

@@ -178,6 +178,7 @@ table.client-table td.muted { color: var(--text-muted); }
         <option value="">전체</option>
       </select>
       <button type="button" class="btn-primary" id="btn-new-consultation">+ 새 상담 등록</button>
+      <button type="button" class="btn-secondary" id="btn-new-consultation-quick" title="상담결과리포트 없이 이름만 빠르게 등록">간단 등록</button>
     </div>
 
     <div class="table-wrap">
@@ -318,9 +319,27 @@ function openNewModal() {
   document.getElementById('new-modal').classList.remove('hidden');
   document.getElementById('nc-name').focus();
 }
-document.getElementById('btn-new-consultation').addEventListener('click', openNewModal);
+document.getElementById('btn-new-consultation').addEventListener('click', () => {
+  window.open('/consult-report.html', '_blank');
+});
+document.getElementById('btn-new-consultation-quick').addEventListener('click', openNewModal);
 document.getElementById('btn-cancel-new').addEventListener('click', () => {
   document.getElementById('new-modal').classList.add('hidden');
+});
+
+/* ---- 상담결과리포트 팝업에서 저장하면 목록을 자동 새로고침 ---- */
+async function refreshCaseList() {
+  try {
+    allCases = await api('/api/cases');
+    render();
+  } catch { /* 로그인 만료 등은 api()가 자체 처리 */ }
+}
+window.addEventListener('message', (e) => {
+  if (e.origin !== window.location.origin) return;
+  if (e.data && e.data.type === 'lawpilot-consult-saved') refreshCaseList();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshCaseList();
 });
 
 document.getElementById('btn-save-new').addEventListener('click', async () => {

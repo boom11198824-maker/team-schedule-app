@@ -178,7 +178,7 @@ for (const col of [
   'case_type TEXT', 'intake_date TEXT', 'assigned_lawyer TEXT', 'current_stage TEXT', 'status TEXT',
   'seal_received INTEGER NOT NULL DEFAULT 0', 'seal_received_date TEXT',
   'cert_usb_received INTEGER NOT NULL DEFAULT 0', 'cert_usb_received_date TEXT',
-  'updated_at TEXT', 'retainer_date TEXT',
+  'updated_at TEXT', 'retainer_date TEXT', 'region TEXT',
 ]) {
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
@@ -192,6 +192,9 @@ db.exec("UPDATE cases SET updated_at = created_at WHERE updated_at IS NULL");
 // retainer_date(수임일자): 접수일(intake_date, 법원 접수 시점)과는 다른 개념 — 의뢰인과 실제
 // 수임계약을 맺은 날짜. "수임료 관리" 구글시트(FEE_MIGRATION_SPREADSHEET_ID) D열이 원본이며,
 // /api/admin/retainer-date-migration-run으로 1회 이식한다. 의뢰인목록 정렬 기준으로 쓴다.
+
+// region(거주지역): 상담결과리포트(consult-report.html)에서 "신규 상담"을 저장하면 자동으로
+// 채워지는 필드. 관할법원 자동추천에 쓰인 값과 동일한 지역명을 그대로 저장해 재입력을 없앤다.
 
 // 상담레포트 등 사건(=상담/의뢰인)에 첨부하는 문서 파일. 실제 파일은 DATA_DIR(영구 디스크) 아래에
 // 저장하고, 이 테이블에는 메타데이터만 보관한다 (문서는 자산이므로 삭제를 전제로 하지 않는다).
@@ -1013,15 +1016,15 @@ app.get('/api/cases/:id', requireLogin, (req, res) => {
 });
 
 app.post('/api/cases', requireLogin, (req, res) => {
-  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status } = req.body || {};
+  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, region } = req.body || {};
   if (!client_name) return res.status(400).json({ error: '의뢰인명은 필수입니다.' });
 
   const info = db
-    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, created_by, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, region, created_by, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
     .run(
       client_name, phone || '', court || '', court_case_no || '', assignee_name || '', memo || '',
-      case_type || '', intake_date || '', assigned_lawyer || '', current_stage || '', status || '', req.user.id
+      case_type || '', intake_date || '', assigned_lawyer || '', current_stage || '', status || '', region || '', req.user.id
     );
 
   res.status(201).json(db.prepare('SELECT * FROM cases WHERE id = ?').get(info.lastInsertRowid));
@@ -1033,7 +1036,7 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
 
   const {
     client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status,
-    seal_received, seal_received_date, cert_usb_received, cert_usb_received_date,
+    seal_received, seal_received_date, cert_usb_received, cert_usb_received_date, region,
   } = req.body || {};
   const updated = {
     client_name: client_name ?? existing.client_name,
@@ -1051,13 +1054,15 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
     seal_received_date: seal_received_date ?? existing.seal_received_date,
     cert_usb_received: cert_usb_received !== undefined ? (cert_usb_received ? 1 : 0) : existing.cert_usb_received,
     cert_usb_received_date: cert_usb_received_date ?? existing.cert_usb_received_date,
+    region: region ?? existing.region,
   };
   db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, assigned_lawyer=?, current_stage=?, status=?,
-              seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=?, updated_at=datetime('now') WHERE id = ?`)
+              seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=?, region=?, updated_at=datetime('now') WHERE id = ?`)
     .run(
       updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo,
       updated.case_type, updated.intake_date, updated.assigned_lawyer, updated.current_stage, updated.status,
       updated.seal_received, updated.seal_received_date, updated.cert_usb_received, updated.cert_usb_received_date,
+      updated.region,
       existing.id
     );
 
@@ -2078,6 +2083,11 @@ app.get('/case-detail.html', (req, res) => {
 app.get('/consultations.html', (req, res) => {
   if (!req.session || !req.session.userId) return res.redirect('/');
   res.sendFile(path.join(__dirname, 'consultations.html'));
+});
+
+app.get('/consult-report.html', (req, res) => {
+  if (!req.session || !req.session.userId) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'consult-report.html'));
 });
 
 app.get('/settings.html', (req, res) => {

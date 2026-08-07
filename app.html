@@ -185,9 +185,9 @@ button.btn-danger:hover { background: #f7d0d0; }
       <span id="google-status" class="badge badge-off">구글 캘린더 미연동</span>
     </div>
     <div class="topbar-right">
-      <a href="/cases.html" class="btn-secondary" style="text-decoration:none; display:inline-block;">⚖️ 사건관리</a>
-      <a href="/consultations.html" class="btn-secondary" style="text-decoration:none; display:inline-block;">🗂️ 상담관리</a>
-      <a href="/clients.html" class="btn-secondary" style="text-decoration:none; display:inline-block;">📋 의뢰인 목록</a>
+      <a href="/cases.html" id="nav-cases" class="btn-secondary" style="text-decoration:none; display:inline-block;">⚖️ 사건관리</a>
+      <a href="/consultations.html" id="nav-consultations" class="btn-secondary" style="text-decoration:none; display:inline-block;">🗂️ 상담관리</a>
+      <a href="/clients.html" id="nav-clients" class="btn-secondary" style="text-decoration:none; display:inline-block;">📋 의뢰인 목록</a>
       <a href="/fee-calendar.html" id="nav-fee-calendar" class="btn-secondary" style="text-decoration:none; display:none;">💰 수임료 캘린더</a>
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="text-decoration:none; display:none;">⚙️ 설정</a>
       <button id="btn-employees" class="btn-secondary" style="display:none">직원 관리</button>
@@ -293,7 +293,7 @@ button.btn-danger:hover { background: #f7d0d0; }
     <div class="modal">
       <h2>직원 관리</h2>
       <table class="emp-table">
-        <thead><tr><th>이름</th><th>아이디</th><th>이메일</th><th>권한</th><th></th></tr></thead>
+        <thead><tr><th>이름</th><th>아이디</th><th>이메일</th><th>권한</th><th>접근 탭</th><th></th></tr></thead>
         <tbody id="emp-tbody"></tbody>
       </table>
       <hr />
@@ -308,6 +308,13 @@ button.btn-danger:hover { background: #f7d0d0; }
           <div><label>초기 비밀번호 *</label><input id="emp-password" required /></div>
         </div>
         <label class="checkbox-row"><input type="checkbox" id="emp-admin" /> 관리자 권한 부여</label>
+        <div id="emp-tabs-row">
+          <label style="display:block; font-size:13px; color:var(--text-secondary); margin:8px 0 4px;">접근 가능한 탭 (관리자는 항상 전체 접근)</label>
+          <label class="checkbox-row"><input type="checkbox" class="emp-tab-checkbox" value="cases" checked /> ⚖️ 사건관리</label>
+          <label class="checkbox-row"><input type="checkbox" class="emp-tab-checkbox" value="consultations" checked /> 🗂️ 상담관리</label>
+          <label class="checkbox-row"><input type="checkbox" class="emp-tab-checkbox" value="clients" checked /> 📋 의뢰인 목록</label>
+          <label class="checkbox-row"><input type="checkbox" class="emp-tab-checkbox" value="fee" checked /> 💰 수임료 캘린더</label>
+        </div>
         <p id="emp-error" class="error-text"></p>
         <div class="modal-actions">
           <div class="spacer"></div>
@@ -391,6 +398,16 @@ async function api(path, options = {}) {
   return data;
 }
 
+// 탭별 접근권한 체크. 관리자는 항상 true. allowed_tabs가 null/undefined(미설정)이면
+// 기존 직원 계정과 동일하게 전체 허용 — 이 기능이 추가되기 전 계정의 접근 범위가
+// 갑자기 좁아지지 않도록 하기 위함이다.
+function hasTab(user, tab) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (user.allowed_tabs === null || user.allowed_tabs === undefined) return true;
+  return String(user.allowed_tabs).split(',').map((s) => s.trim()).filter(Boolean).includes(tab);
+}
+
 async function init() {
   try {
     currentUser = await api('/api/auth/me');
@@ -403,8 +420,11 @@ async function init() {
   if (currentUser.role === 'admin') {
     document.getElementById('btn-employees').style.display = 'inline-block';
     document.getElementById('nav-settings').style.display = 'inline-block';
-    document.getElementById('nav-fee-calendar').style.display = 'inline-block';
   }
+  if (!hasTab(currentUser, 'cases')) document.getElementById('nav-cases').style.display = 'none';
+  if (!hasTab(currentUser, 'consultations')) document.getElementById('nav-consultations').style.display = 'none';
+  if (!hasTab(currentUser, 'clients')) document.getElementById('nav-clients').style.display = 'none';
+  if (hasTab(currentUser, 'fee')) document.getElementById('nav-fee-calendar').style.display = 'inline-block';
 
   renderCategoryLegend();
   setupCalendar();
@@ -898,20 +918,55 @@ document.getElementById('btn-detail-delete').addEventListener('click', async () 
 
 const employeesModal = document.getElementById('employees-modal');
 
+const TAB_LABELS = { cases: '⚖️ 사건관리', consultations: '🗂️ 상담관리', clients: '📋 의뢰인 목록', fee: '💰 수임료 캘린더' };
+
+function tabSummaryText(emp) {
+  if (emp.role === 'admin') return '전체(관리자)';
+  if (emp.allowed_tabs === null || emp.allowed_tabs === undefined) return '전체';
+  const keys = String(emp.allowed_tabs).split(',').map((s) => s.trim()).filter(Boolean);
+  if (!keys.length) return '(없음 — 팀 스케줄만)';
+  return keys.map((k) => TAB_LABELS[k] || k).join(', ');
+}
+
 async function loadEmployees() {
   const rows = await api('/api/employees');
   const tbody = document.getElementById('emp-tbody');
   tbody.innerHTML = '';
   rows.forEach((emp) => {
     const tr = document.createElement('tr');
+    const currentTabs = new Set(
+      emp.allowed_tabs === null || emp.allowed_tabs === undefined
+        ? Object.keys(TAB_LABELS)
+        : String(emp.allowed_tabs).split(',').map((s) => s.trim()).filter(Boolean)
+    );
+    const editCheckboxes = Object.entries(TAB_LABELS)
+      .map(([key, label]) => `<label class="checkbox-row"><input type="checkbox" class="edit-tab-checkbox" value="${key}" ${currentTabs.has(key) ? 'checked' : ''} /> ${label}</label>`)
+      .join('');
     tr.innerHTML = `
       <td>${emp.name}</td>
       <td>${emp.username}</td>
       <td>${emp.email || ''}</td>
       <td>${emp.role === 'admin' ? '관리자' : '직원'}</td>
-      <td>${emp.id === currentUser.id ? '' : `<button data-id="${emp.id}" class="btn-secondary btn-delete-emp">삭제</button>`}</td>
+      <td>
+        <span class="tab-summary">${tabSummaryText(emp)}</span>
+        <div class="tab-edit-box hidden" style="margin-top:6px;">${editCheckboxes}<button type="button" class="btn-secondary btn-save-tabs" style="margin-top:4px;">저장</button></div>
+      </td>
+      <td>
+        ${emp.role === 'admin' ? '' : `<button data-id="${emp.id}" class="btn-secondary btn-edit-tabs">권한 수정</button>`}
+        ${emp.id === currentUser.id ? '' : `<button data-id="${emp.id}" class="btn-secondary btn-delete-emp">삭제</button>`}
+      </td>
     `;
     tbody.appendChild(tr);
+
+    if (emp.role !== 'admin') {
+      const editBox = tr.querySelector('.tab-edit-box');
+      tr.querySelector('.btn-edit-tabs').addEventListener('click', () => editBox.classList.toggle('hidden'));
+      tr.querySelector('.btn-save-tabs').addEventListener('click', async () => {
+        const selected = Array.from(tr.querySelectorAll('.edit-tab-checkbox:checked')).map((cb) => cb.value);
+        await api(`/api/employees/${emp.id}`, { method: 'PATCH', body: JSON.stringify({ allowed_tabs: selected }) });
+        loadEmployees();
+      });
+    }
   });
   tbody.querySelectorAll('.btn-delete-emp').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -928,18 +983,26 @@ document.getElementById('btn-employees').addEventListener('click', () => {
 });
 document.getElementById('btn-close-employees').addEventListener('click', () => employeesModal.classList.add('hidden'));
 
+document.getElementById('emp-admin').addEventListener('change', (e) => {
+  document.getElementById('emp-tabs-row').style.display = e.target.checked ? 'none' : 'block';
+});
+
 document.getElementById('emp-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const isAdmin = document.getElementById('emp-admin').checked;
   const payload = {
     name: document.getElementById('emp-name').value.trim(),
     username: document.getElementById('emp-username').value.trim(),
     email: document.getElementById('emp-email').value.trim(),
     password: document.getElementById('emp-password').value,
-    role: document.getElementById('emp-admin').checked ? 'admin' : 'employee',
+    role: isAdmin ? 'admin' : 'employee',
+    allowed_tabs: isAdmin ? [] : Array.from(document.querySelectorAll('.emp-tab-checkbox:checked')).map((cb) => cb.value),
   };
   try {
     await api('/api/employees', { method: 'POST', body: JSON.stringify(payload) });
     document.getElementById('emp-form').reset();
+    document.getElementById('emp-tabs-row').style.display = 'block';
+    document.querySelectorAll('.emp-tab-checkbox').forEach((cb) => { cb.checked = true; });
     document.getElementById('emp-error').textContent = '';
     loadEmployees();
   } catch (err) {

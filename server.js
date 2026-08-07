@@ -169,6 +169,17 @@ try {
   if (!String(err.message).includes('duplicate column')) throw err;
 }
 
+// 탭별 접근권한: 직원(role='employee') 계정이 볼 수 있는 탭을 콤마로 구분해 저장한다.
+// (예: "fee" 하나만 저장하면 수임료 캘린더만 접근 가능한 직원이 된다.) NULL/빈 문자열이면
+// "제한 없음"으로 취급한다 — 이 컬럼이 생기기 전부터 있던 기존 직원 계정들의 접근 범위가
+// 이 기능 배포로 갑자기 좁아지는 일이 없도록 하기 위함이다(기존 기능을 깨뜨리지 않는다).
+// 관리자(admin) 계정은 이 값과 무관하게 항상 모든 탭에 접근할 수 있다.
+try {
+  db.exec("ALTER TABLE employees ADD COLUMN allowed_tabs TEXT");
+} catch (err) {
+  if (!String(err.message).includes('duplicate column')) throw err;
+}
+
 // 사건상세 페이지용 컬럼: 사건유형(개인회생/개인파산 등), 접수일, 담당변호사, 현재단계
 // status: 의뢰인 여정 전체 단계(상담중/접수전/사건진행중/개시결정후) — case_type별 세부 절차인
 // current_stage와는 별개의 축이다. 상담관리 페이지에서 새 상담을 등록하면 status='상담중'으로
@@ -413,6 +424,31 @@ function requireAdmin(req, res, next) {
     }
     next();
   });
+}
+
+// 탭별 접근권한이 걸리는 대상 탭 목록. "팀 스케줄"과 "설정"은 여기 포함하지 않는다 —
+// 팀 스케줄은 로그인 직후 랜딩 페이지라 누구나 항상 봐야 하고, 설정(직원 관리·구글 연동 등)은
+// 성격상 언제나 관리자 전용으로 남아야 하기 때문이다.
+const RESTRICTABLE_TABS = ['cases', 'consultations', 'clients', 'fee'];
+
+function hasTabAccess(user, tab) {
+  if (user.role === 'admin') return true;
+  // null/undefined("미설정") = 기존과 동일하게 전체 허용(하위호환). 반면 ''(빈 문자열)은
+  // 관리자가 탭을 전부 명시적으로 해제한 상태이므로 falsy라고 곧장 true를 돌려주면 안 된다 —
+  // 그러면 "모든 탭을 차단당한 직원"이 오히려 전체 접근 권한을 갖는 보안 버그가 생긴다.
+  if (user.allowed_tabs === null || user.allowed_tabs === undefined) return true;
+  return user.allowed_tabs.split(',').map((s) => s.trim()).filter(Boolean).includes(tab);
+}
+
+function requireTab(tab) {
+  return function (req, res, next) {
+    requireLogin(req, res, () => {
+      if (!hasTabAccess(req.user, tab)) {
+        return res.status(403).json({ error: '이 기능에 접근할 권한이 없습니다.' });
+      }
+      next();
+    });
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -898,8 +934,8 @@ app.post('/api/auth/login', (req, res) => {
 app.post('/api/auth/logout', (req, res) => { req.session.destroy(() => res.json({ ok: true })); });
 
 app.get('/api/auth/me', requireLogin, (req, res) => {
-  const { id, username, name, role, email } = req.user;
-  res.json({ id, username, name, role, email });
+  const { id, username, name, role, email, allowed_tabs } = req.user;
+  res.json({ id, username, name, role, email, allowed_tabs });
 });
 
 app.post('/api/auth/change-password', requireLogin, (req, res) => {
@@ -917,16 +953,32 @@ app.post('/api/auth/change-password', requireLogin, (req, res) => {
 /* ---- /api/employees ---- */
 
 app.get('/api/employees', requireLogin, (req, res) => {
-  res.json(db.prepare('SELECT id, username, email, name, role FROM employees ORDER BY id').all());
+  res.json(db.prepare('SELECT id, username, email, name, role, allowed_tabs FROM employees ORDER BY id').all());
 });
 
+// allowed_tabs로 들어온 값(배열 또는 콤마 문자열)을 RESTRICTABLE_TABS 안에서만 걸러
+// 콤마 문자열로 정리한다. 필드 자체가 안 왔으면(undefined) "건드리지 않음"을 의미하도록
+// undefined를 그대로 돌려주고, 빈 배열([])은 반드시 빈 문자열('')로 저장해야 한다 —
+// ''(제한된 탭 전부 차단)과 null(제한 없음, 전체 허용)은 의미가 정반대라서, 여기서 ''를
+// null로 뭉개버리면 "탭을 전부 해제한 직원"이 도리어 전체 접근 권한을 갖게 되는
+// 심각한 보안 버그가 된다.
+function normalizeAllowedTabs(input) {
+  if (input === undefined) return undefined; // 필드 자체가 안 옴 -> 기존 값 유지(PATCH) / NULL(POST)
+  if (input === null) return null; // 명시적으로 null -> 제한 없음으로 초기화
+  const arr = Array.isArray(input) ? input : String(input).split(',');
+  const cleaned = arr.map((s) => String(s).trim()).filter((s) => RESTRICTABLE_TABS.includes(s));
+  return cleaned.join(','); // 빈 배열이면 '' 그대로 반환 (null과 구분되어야 함)
+}
+
 app.post('/api/employees', requireAdmin, async (req, res) => {
-  const { username, password, name, email, role } = req.body || {};
+  const { username, password, name, email, role, allowed_tabs } = req.body || {};
   if (!username || !password || !name) return res.status(400).json({ error: '아이디, 비밀번호, 이름은 필수입니다.' });
   try {
+    // allowed_tabs를 아예 안 보내면(예: 예전 클라이언트) 전체 허용(NULL)으로 남겨 기존 동작 유지.
+    const normalizedTabs = normalizeAllowedTabs(allowed_tabs);
     const info = db
-      .prepare(`INSERT INTO employees (username, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?)`)
-      .run(username, email || '', hashPassword(password), name, role === 'admin' ? 'admin' : 'employee');
+      .prepare(`INSERT INTO employees (username, email, password_hash, name, role, allowed_tabs) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(username, email || '', hashPassword(password), name, role === 'admin' ? 'admin' : 'employee', normalizedTabs === undefined ? null : normalizedTabs);
 
     if (email && isGoogleConnected()) {
       try { await googleShareCalendar(email); } catch (e) { console.error('구글 캘린더 공유 실패:', e.message); }
@@ -939,7 +991,7 @@ app.post('/api/employees', requireAdmin, async (req, res) => {
 });
 
 app.patch('/api/employees/:id', requireAdmin, (req, res) => {
-  const { name, email, password, role } = req.body || {};
+  const { name, email, password, role, allowed_tabs } = req.body || {};
   const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(req.params.id);
   if (!emp) return res.status(404).json({ error: '직원을 찾을 수 없습니다.' });
 
@@ -949,6 +1001,8 @@ app.patch('/api/employees/:id', requireAdmin, (req, res) => {
   if (email !== undefined) { fields.push('email = ?'); values.push(email); }
   if (role) { fields.push('role = ?'); values.push(role === 'admin' ? 'admin' : 'employee'); }
   if (password) { fields.push('password_hash = ?'); values.push(hashPassword(password)); }
+  const normalizedTabs = normalizeAllowedTabs(allowed_tabs);
+  if (normalizedTabs !== undefined) { fields.push('allowed_tabs = ?'); values.push(normalizedTabs); }
   if (!fields.length) return res.json({ ok: true });
 
   values.push(req.params.id);
@@ -1240,7 +1294,7 @@ function formatManwon(amount) {
 // 일정으로 지저분해진다는 피드백에 따라 2026-08부터는 수임료 전용 캘린더(fee-calendar.html,
 // /api/admin/fee-calendar)에서만 보여주고 팀 스케줄과는 더 이상 연동하지 않는다.)
 
-app.get('/api/cases/:id/fee', requireAdmin, (req, res) => {
+app.get('/api/cases/:id/fee', requireTab('fee'), (req, res) => {
   const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
 
@@ -1249,7 +1303,7 @@ app.get('/api/cases/:id/fee', requireAdmin, (req, res) => {
   res.json({ total_amount: fee.total_amount, memo: fee.memo || '', installments });
 });
 
-app.put('/api/cases/:id/fee', requireAdmin, (req, res) => {
+app.put('/api/cases/:id/fee', requireTab('fee'), (req, res) => {
   const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
 
@@ -1263,7 +1317,7 @@ app.put('/api/cases/:id/fee', requireAdmin, (req, res) => {
   res.json({ total_amount: amount, memo: memo || '' });
 });
 
-app.post('/api/cases/:id/fee-installments', requireAdmin, (req, res) => {
+app.post('/api/cases/:id/fee-installments', requireTab('fee'), (req, res) => {
   const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
 
@@ -1284,7 +1338,7 @@ app.post('/api/cases/:id/fee-installments', requireAdmin, (req, res) => {
   res.status(201).json(installment);
 });
 
-app.patch('/api/fee-installments/:id', requireAdmin, (req, res) => {
+app.patch('/api/fee-installments/:id', requireTab('fee'), (req, res) => {
   const existing = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '납부 회차를 찾을 수 없습니다.' });
 
@@ -1316,7 +1370,7 @@ app.patch('/api/fee-installments/:id', requireAdmin, (req, res) => {
   res.json(fresh);
 });
 
-app.delete('/api/fee-installments/:id', requireAdmin, (req, res) => {
+app.delete('/api/fee-installments/:id', requireTab('fee'), (req, res) => {
   const existing = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '납부 회차를 찾을 수 없습니다.' });
   db.prepare('DELETE FROM case_fee_installments WHERE id = ?').run(existing.id);
@@ -1327,7 +1381,7 @@ app.delete('/api/fee-installments/:id', requireAdmin, (req, res) => {
    팀 스케줄과는 완전히 분리된, 읽기 전용 뷰다. case_fee_installments가 원본이므로(OSMU)
    이 화면은 데이터를 새로 만들지 않고 항상 그 원본을 그대로 읽어서 보여준다. */
 
-app.get('/api/admin/fee-calendar', requireAdmin, (req, res) => {
+app.get('/api/admin/fee-calendar', requireTab('fee'), (req, res) => {
   const { start, end } = req.query;
   const start10 = start ? String(start).slice(0, 10) : null;
   const end10 = end ? String(end).slice(0, 10) : null;
@@ -1368,7 +1422,7 @@ function computeSettlementPeriod(today) {
   };
 }
 
-app.get('/api/admin/fee-calendar/period-summary', requireAdmin, (req, res) => {
+app.get('/api/admin/fee-calendar/period-summary', requireTab('fee'), (req, res) => {
   const { start, end } = computeSettlementPeriod(new Date());
   const rows = db
     .prepare(
@@ -1388,7 +1442,7 @@ app.get('/api/admin/fee-calendar/period-summary', requireAdmin, (req, res) => {
 // "미납자 리스트": 납부예정일이 이미 지났는데도 아직 '완료' 처리되지 않은 회차를 의뢰인별로
 // 묶어서 보여준다. 정산기간과 무관하게(과거 기간 포함) 항상 "지금 기준으로 밀린 사람"을
 // 그대로 보여주는 것이 실무에서 가장 유용하므로 기간 필터는 두지 않는다.
-app.get('/api/admin/fee-calendar/overdue', requireAdmin, (req, res) => {
+app.get('/api/admin/fee-calendar/overdue', requireTab('fee'), (req, res) => {
   const today = new Date();
   const pad2 = (n) => String(n).padStart(2, '0');
   const todayStr = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
@@ -1514,7 +1568,7 @@ function parseBankStatement(buffer) {
   return deposits;
 }
 
-app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
+app.post('/api/admin/fee-calendar/import-preview', requireTab('fee'), (req, res) => {
   bankStatementUpload.single('file')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: '업로드할 거래내역 파일을 선택해주세요.' });
@@ -1731,7 +1785,7 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
   });
 });
 
-app.post('/api/admin/fee-calendar/confirm-matches', requireAdmin, (req, res) => {
+app.post('/api/admin/fee-calendar/confirm-matches', requireTab('fee'), (req, res) => {
   const { matches } = req.body || {};
   if (!Array.isArray(matches) || matches.length === 0) {
     return res.status(400).json({ error: '확정할 매칭 항목이 없습니다.' });
@@ -1758,7 +1812,7 @@ app.post('/api/admin/fee-calendar/confirm-matches', requireAdmin, (req, res) => 
 // 통장매칭 없이 사무실에서 직접 확인하고 일괄로 완납 처리해야 할 때(예: 현금 수납 확인 후
 // 한꺼번에 정리) 쓰는 관리자 전용 기능. 동명이인이 있으면 어떤 사건인지 알 수 없으므로 절대
 // 추측해서 처리하지 않고 ambiguous로 분류해 사람이 직접 확인하게 한다(데이터를 잃지 않는다).
-app.post('/api/admin/fee-calendar/bulk-complete', requireAdmin, (req, res) => {
+app.post('/api/admin/fee-calendar/bulk-complete', requireTab('fee'), (req, res) => {
   const names = Array.isArray(req.body.names)
     ? Array.from(new Set(req.body.names.map((n) => String(n || '').trim()).filter(Boolean)))
     : [];

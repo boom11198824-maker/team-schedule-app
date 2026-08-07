@@ -272,7 +272,7 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
     </div>
     <div class="topbar-right">
       <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
-      <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
+      <a href="/consultations.html" id="nav-consultations" class="btn-secondary">🗂️ 상담관리</a>
       <a id="btn-client-search" href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
       <a href="/fee-calendar.html" id="nav-fee-calendar" class="btn-secondary" style="display:none">💰 수임료 캘린더</a>
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
@@ -488,6 +488,13 @@ async function api(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
   return data;
+}
+
+function hasTab(user, tab) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (user.allowed_tabs === null || user.allowed_tabs === undefined) return true;
+  return String(user.allowed_tabs).split(',').map((s) => s.trim()).filter(Boolean).includes(tab);
 }
 
 function escapeHTML(s) {
@@ -1031,12 +1038,19 @@ async function init() {
     window.location.href = '/';
     return;
   }
+  if (!hasTab(currentUser, 'cases')) {
+    alert('이 페이지에 접근할 권한이 없습니다.');
+    window.location.href = '/app.html';
+    return;
+  }
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
   if (currentUser.role === 'admin') {
     document.getElementById('btn-sheets-export').style.display = 'inline-block';
     document.getElementById('nav-settings').style.display = 'inline-block';
-    document.getElementById('nav-fee-calendar').style.display = 'inline-block';
   }
+  if (!hasTab(currentUser, 'consultations')) document.getElementById('nav-consultations').style.display = 'none';
+  if (!hasTab(currentUser, 'clients')) document.getElementById('btn-client-search').style.display = 'none';
+  if (hasTab(currentUser, 'fee')) document.getElementById('nav-fee-calendar').style.display = 'inline-block';
   await refreshSheetsStatus();
   await loadClients();
   await loadAll();

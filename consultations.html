@@ -160,9 +160,9 @@ table.client-table td.muted { color: var(--text-muted); }
     </div>
     <div class="topbar-right">
       <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
-      <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
+      <a href="/cases.html" id="nav-cases" class="btn-secondary">⚖️ 사건관리</a>
       <a href="/consultations.html" class="btn-secondary active">🗂️ 상담관리</a>
-      <a href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
+      <a href="/clients.html" id="nav-clients" class="btn-secondary">📋 의뢰인 목록</a>
       <a href="/fee-calendar.html" id="nav-fee-calendar" class="btn-secondary" style="display:none">💰 수임료 캘린더</a>
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
       <span id="user-name" class="user-name"></span>
@@ -252,6 +252,13 @@ async function api(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
   return data;
+}
+
+function hasTab(user, tab) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (user.allowed_tabs === null || user.allowed_tabs === undefined) return true;
+  return String(user.allowed_tabs).split(',').map((s) => s.trim()).filter(Boolean).includes(tab);
 }
 
 function escapeHTML(s) {
@@ -515,11 +522,18 @@ async function init() {
     window.location.href = '/';
     return;
   }
+  if (!hasTab(currentUser, 'consultations')) {
+    alert('이 페이지에 접근할 권한이 없습니다.');
+    window.location.href = '/app.html';
+    return;
+  }
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
   if (currentUser.role === 'admin') {
     document.getElementById('nav-settings').style.display = 'inline-block';
-    document.getElementById('nav-fee-calendar').style.display = 'inline-block';
   }
+  if (!hasTab(currentUser, 'cases')) document.getElementById('nav-cases').style.display = 'none';
+  if (!hasTab(currentUser, 'clients')) document.getElementById('nav-clients').style.display = 'none';
+  if (hasTab(currentUser, 'fee')) document.getElementById('nav-fee-calendar').style.display = 'inline-block';
 
   appSettings = await api('/api/settings/defaults').catch(() => appSettings);
 

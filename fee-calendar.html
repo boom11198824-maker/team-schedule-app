@@ -176,11 +176,11 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
     </div>
     <div class="topbar-right">
       <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
-      <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
-      <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
-      <a href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
+      <a href="/cases.html" id="nav-cases" class="btn-secondary">⚖️ 사건관리</a>
+      <a href="/consultations.html" id="nav-consultations" class="btn-secondary">🗂️ 상담관리</a>
+      <a href="/clients.html" id="nav-clients" class="btn-secondary">📋 의뢰인 목록</a>
       <a href="/fee-calendar.html" class="btn-secondary active">💰 수임료 캘린더</a>
-      <a href="/settings.html" class="btn-secondary">⚙️ 설정</a>
+      <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
       <button id="btn-upload-statement" class="btn-secondary">📥 거래내역 업로드</button>
       <input type="file" id="statement-file-input" accept=".xls,.xlsx,.csv" style="display:none" />
       <span id="user-name" class="user-name"></span>
@@ -294,6 +294,13 @@ async function api(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
   return data;
+}
+
+function hasTab(user, tab) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (user.allowed_tabs === null || user.allowed_tabs === undefined) return true;
+  return String(user.allowed_tabs).split(',').map((s) => s.trim()).filter(Boolean).includes(tab);
 }
 
 // 납부회차 하나의 캘린더 표시 색상. 완료는 항상 초록, 예정은 마감까지 남은 기간에 따라
@@ -567,12 +574,18 @@ async function init() {
     window.location.href = '/';
     return;
   }
-  if (currentUser.role !== 'admin') {
-    alert('관리자만 접근할 수 있는 페이지입니다.');
+  if (!hasTab(currentUser, 'fee')) {
+    alert('이 페이지에 접근할 권한이 없습니다.');
     window.location.href = '/app.html';
     return;
   }
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+  if (currentUser.role === 'admin') {
+    document.getElementById('nav-settings').style.display = 'inline-block';
+  }
+  if (!hasTab(currentUser, 'cases')) document.getElementById('nav-cases').style.display = 'none';
+  if (!hasTab(currentUser, 'consultations')) document.getElementById('nav-consultations').style.display = 'none';
+  if (!hasTab(currentUser, 'clients')) document.getElementById('nav-clients').style.display = 'none';
 
   setupCalendar();
   loadPeriodSummary();

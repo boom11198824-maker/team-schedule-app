@@ -188,6 +188,7 @@ button.btn-danger:hover { background: #f7d0d0; }
       <a href="/cases.html" class="btn-secondary" style="text-decoration:none; display:inline-block;">⚖️ 사건관리</a>
       <a href="/consultations.html" class="btn-secondary" style="text-decoration:none; display:inline-block;">🗂️ 상담관리</a>
       <a href="/clients.html" class="btn-secondary" style="text-decoration:none; display:inline-block;">📋 의뢰인 목록</a>
+      <a href="/fee-calendar.html" id="nav-fee-calendar" class="btn-secondary" style="text-decoration:none; display:none;">💰 수임료 캘린더</a>
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="text-decoration:none; display:none;">⚙️ 설정</a>
       <button id="btn-employees" class="btn-secondary" style="display:none">직원 관리</button>
       <button id="btn-google" class="btn-secondary">구글 캘린더 연동</button>
@@ -402,6 +403,7 @@ async function init() {
   if (currentUser.role === 'admin') {
     document.getElementById('btn-employees').style.display = 'inline-block';
     document.getElementById('nav-settings').style.display = 'inline-block';
+    document.getElementById('nav-fee-calendar').style.display = 'inline-block';
   }
 
   renderCategoryLegend();
@@ -423,6 +425,24 @@ async function init() {
   }
 }
 
+// 사건관리(case_tasks: 서류/보정 제출기한)를 팀 스케줄 달력에 함께 보여주기 위한 표시 규칙.
+// 이 항목들은 schedules 테이블이 아니라 case_tasks가 원본이므로(OSMU) 여기서 새로 만들지 않고
+// 읽기 전용으로 표시만 하고, 클릭하면 수정은 사건상세 페이지에서 하도록 안내한다.
+function caseTaskEventColor(task, dDay) {
+  if (task.status === '완료') return '#1e8e5a';
+  if (dDay < 0) return '#d6394a';
+  if (dDay === 0) return '#d6394a';
+  if (dDay <= 3) return '#d99a06';
+  return '#2563eb';
+}
+function caseTaskEventIcon(task, dDay) {
+  if (task.status === '완료') return '✅';
+  if (dDay < 0) return '⛔';
+  if (dDay === 0) return '🔴';
+  if (dDay <= 3) return '🟡';
+  return '🔵';
+}
+
 function setupCalendar() {
   const el = document.getElementById('calendar');
   const isMobile = window.innerWidth < 768;
@@ -438,21 +458,42 @@ function setupCalendar() {
     selectable: true,
     events: async (info, success, failure) => {
       try {
-        const rows = await api(`/api/schedules?start=${encodeURIComponent(info.startStr)}&end=${encodeURIComponent(info.endStr)}`);
-        success(rows.map((r) => {
+        const [rows, tasks] = await Promise.all([
+          api(`/api/schedules?start=${encodeURIComponent(info.startStr)}&end=${encodeURIComponent(info.endStr)}`),
+          api(`/api/case-tasks?start=${encodeURIComponent(info.startStr)}&end=${encodeURIComponent(info.endStr)}`),
+        ]);
+        const scheduleEvents = rows.map((r) => {
           const meta = CATEGORY_META[r.category] || CATEGORY_META['업무'];
           const namePart = r.assignee_name ? `[${r.assignee_name}] ` : '';
           return {
-            id: r.id,
+            id: `s-${r.id}`,
             title: `${meta.icon} ${namePart}${r.title}`,
             start: r.start_at.slice(0, 10),
             end: addDays(r.end_at, 1), // FullCalendar는 종료일을 배타적(exclusive)으로 취급하므로 하루 더해준다
             allDay: true,
             backgroundColor: meta.color,
             borderColor: meta.color,
-            extendedProps: r,
+            extendedProps: Object.assign({ _source: 'schedule' }, r),
           };
-        }));
+        });
+        const todayStr = dateOnly(new Date());
+        const taskEvents = tasks.map((t) => {
+          const dDay = daysBetween(todayStr, t.due_date.slice(0, 10));
+          const color = caseTaskEventColor(t, dDay);
+          const icon = caseTaskEventIcon(t, dDay);
+          const namePart = t.client_name ? `[${t.client_name}] ` : '';
+          return {
+            id: `t-${t.id}`,
+            title: `${icon} ${namePart}${t.task_type}`,
+            start: t.due_date.slice(0, 10),
+            end: addDays(t.due_date, 1),
+            allDay: true,
+            backgroundColor: color,
+            borderColor: color,
+            extendedProps: Object.assign({ _source: 'case_task' }, t),
+          };
+        });
+        success(scheduleEvents.concat(taskEvents));
       } catch (err) { failure(err); }
     },
     select: (info) => {
@@ -461,7 +502,14 @@ function setupCalendar() {
       const endStr = addDays(endExclusive, -1);
       openScheduleModal({ startStr, endStr: endStr >= startStr ? endStr : startStr });
     },
-    eventClick: (info) => openDetailModal(info.event.extendedProps),
+    eventClick: (info) => {
+      const props = info.event.extendedProps;
+      if (props._source === 'case_task') {
+        window.location.href = `/case-detail.html?id=${props.case_id}&from=cases`;
+        return;
+      }
+      openDetailModal(props);
+    },
   });
   calendar.render();
 }

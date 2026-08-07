@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>수임료 캘린더 · 팀 스케줄</title>
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta name="theme-color" content="#14213d" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="팀 스케줄" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.11/index.global.min.css" />
+<style>
+:root {
+  --brand-navy:     #14213d;
+  --brand-navy-dark:#0b1626;
+  --brand-coral:    #ff6452;
+  --brand-coral-dark:#e5503f;
+
+  --surface-1:      #f7f8fa;
+  --card-surface:   #ffffff;
+  --text-primary:   #14213d;
+  --text-secondary: #4b5a78;
+  --text-muted:     #8993a6;
+  --gridline:       #e2e6ed;
+  --border:         rgba(20,33,61,0.12);
+
+  --status-good:        #1e8e5a;
+  --status-warning:     #d99a06;
+  --status-serious:     #d9773e;
+  --status-critical:    #d6394a;
+  --status-good-bg:     #e3f5ec;
+  --status-warning-bg:  #fbf0da;
+  --status-serious-bg:  #fbebdd;
+  --status-critical-bg: #fbe4e4;
+  --status-muted-bg:    #eef0f4;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; background: white; border-bottom: 1px solid var(--gridline);
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-left h1 { font-size: 18px; margin: 0; color: var(--brand-navy); }
+.topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.user-name { font-size: 14px; color: var(--text-secondary); font-weight: 600; }
+
+button.btn-secondary, a.btn-secondary {
+  background: #eef1f6; color: var(--text-secondary); border: 1px solid var(--gridline); padding: 8px 14px;
+  border-radius: 8px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block;
+}
+button.btn-secondary:hover, a.btn-secondary:hover { background: #e2e6ed; }
+a.btn-secondary.active { background: var(--brand-navy); color: #fff; border-color: var(--brand-navy); }
+
+main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+.layout { display: grid; grid-template-columns: 1fr 300px; gap: 20px; align-items: start; }
+
+.card {
+  background: var(--card-surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+
+/* ---- sidebar: 정산기간 요약 ---- */
+.period-label { font-size: 12px; color: var(--text-secondary); margin: 0 0 12px; }
+.period-label b { color: var(--text-primary); }
+.stat-tile {
+  border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px;
+}
+.stat-tile .label { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
+.stat-tile .value { font-size: 22px; font-weight: 700; }
+.stat-tile.good { background: var(--status-good-bg); }
+.stat-tile.good .value { color: var(--status-good); }
+.stat-tile.warn { background: var(--status-warning-bg); }
+.stat-tile.warn .value { color: var(--status-warning); }
+.stat-tile.total { background: var(--brand-navy); }
+.stat-tile.total .label { color: rgba(255,255,255,0.75); }
+.stat-tile.total .value { color: #fff; font-size: 26px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--text-secondary); margin-top: 14px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+.empty-note { color: var(--text-muted); font-size: 13px; text-align: center; padding: 20px 0; }
+
+#calendar .fc-event { cursor: pointer; font-size: 12px; }
+#calendar .fc-toolbar-title { font-size: 16px; }
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .topbar-left h1 { font-size: 16px; }
+  button.btn-secondary, a.btn-secondary { padding: 7px 10px; font-size: 12px; }
+  main { padding: 12px; }
+}
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1>💰 수임료 캘린더</h1>
+    </div>
+    <div class="topbar-right">
+      <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
+      <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
+      <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
+      <a href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
+      <a href="/fee-calendar.html" class="btn-secondary active">💰 수임료 캘린더</a>
+      <a href="/settings.html" class="btn-secondary">⚙️ 설정</a>
+      <span id="user-name" class="user-name"></span>
+      <button id="btn-logout" class="btn-secondary">로그아웃</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="layout">
+      <div class="card">
+        <div id="calendar"></div>
+      </div>
+      <div>
+        <div class="card">
+          <p class="period-label">정산기간 (매달 25일 ~ 다음달 24일, 오늘 기준 고정)<br /><b id="period-range">-</b></p>
+          <div class="stat-tile good">
+            <div class="label">✅ 완료 (수납)</div>
+            <div class="value" id="stat-completed">0원</div>
+          </div>
+          <div class="stat-tile warn">
+            <div class="label">🕓 예정 (미수납)</div>
+            <div class="value" id="stat-upcoming">0원</div>
+          </div>
+          <div class="stat-tile total">
+            <div class="label">💰 총 예상수임료</div>
+            <div class="value" id="stat-total">0원</div>
+          </div>
+          <div class="legend">
+            <span><i style="background:#1e8e5a"></i>완료</span>
+            <span><i style="background:#2563eb"></i>예정</span>
+            <span><i style="background:#d99a06"></i>D-3 이내</span>
+            <span><i style="background:#d6394a"></i>오늘/기한초과</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.11/index.global.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.11/locales-all.global.min.js"></script>
+<script>
+let currentUser = null;
+let calendar = null;
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function dateOnly(date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+function addDays(dateStr, n) {
+  const [y, m, d] = dateStr.slice(0, 10).split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
+}
+function daysBetween(aStr, bStr) {
+  const a = new Date(aStr + 'T00:00:00Z');
+  const b = new Date(bStr + 'T00:00:00Z');
+  return Math.round((b - a) / 86400000);
+}
+function won(n) { return `${Number(n || 0).toLocaleString('ko-KR')}원`; }
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401) { window.location.href = '/'; throw new Error('로그인이 필요합니다.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
+  return data;
+}
+
+// 납부회차 하나의 캘린더 표시 색상. 완료는 항상 초록, 예정은 마감까지 남은 기간에 따라
+// 사건관리 화면(cases.html)과 같은 신호색으로 보여줘서 "곧 받아야 할 돈"이 한눈에 보이게 한다.
+function installmentColor(inst, dDay) {
+  if (inst.status === '완료') return '#1e8e5a';
+  if (dDay <= 0) return '#d6394a';
+  if (dDay <= 3) return '#d99a06';
+  return '#2563eb';
+}
+
+function setupCalendar() {
+  const el = document.getElementById('calendar');
+  const isMobile = window.innerWidth < 768;
+  calendar = new FullCalendar.Calendar(el, {
+    locale: 'ko',
+    height: 'auto',
+    headerToolbar: { left: 'prev,next today', center: 'title', right: 'listMonth,dayGridMonth' },
+    buttonText: { today: '오늘', month: '월' },
+    initialView: isMobile ? 'listMonth' : 'dayGridMonth',
+    eventDisplay: 'block',
+    dayMaxEvents: true,
+    selectable: false,
+    events: async (info, success, failure) => {
+      try {
+        const rows = await api(`/api/admin/fee-calendar?start=${encodeURIComponent(info.startStr)}&end=${encodeURIComponent(info.endStr)}`);
+        const todayStr = dateOnly(new Date());
+        success(rows.map((r) => {
+          const dDay = daysBetween(todayStr, r.due_date.slice(0, 10));
+          const color = installmentColor(r, dDay);
+          const icon = r.status === '완료' ? '✅' : '🕓';
+          const man = Math.round((Number(r.amount) || 0) / 10000);
+          return {
+            id: r.id,
+            title: `${icon} ${r.client_name || ''} ${r.seq}차 ${man}만원`,
+            start: r.due_date.slice(0, 10),
+            end: addDays(r.due_date, 1),
+            allDay: true,
+            backgroundColor: color,
+            borderColor: color,
+            extendedProps: r,
+          };
+        }));
+      } catch (err) { failure(err); }
+    },
+    eventClick: (info) => {
+      const caseId = info.event.extendedProps.case_id;
+      if (caseId) window.location.href = `/case-detail.html?id=${caseId}&from=fee-calendar`;
+    },
+  });
+  calendar.render();
+}
+
+async function loadPeriodSummary() {
+  try {
+    const s = await api('/api/admin/fee-calendar/period-summary');
+    document.getElementById('period-range').textContent = `${s.start} ~ ${s.end}`;
+    document.getElementById('stat-completed').textContent = won(s.completed);
+    document.getElementById('stat-upcoming').textContent = won(s.upcoming);
+    document.getElementById('stat-total').textContent = won(s.total);
+  } catch (err) {
+    document.getElementById('period-range').textContent = '불러오기 실패';
+  }
+}
+
+async function init() {
+  try {
+    currentUser = await api('/api/auth/me');
+  } catch {
+    window.location.href = '/';
+    return;
+  }
+  if (currentUser.role !== 'admin') {
+    alert('관리자만 접근할 수 있는 페이지입니다.');
+    window.location.href = '/app.html';
+    return;
+  }
+  document.getElementById('user-name').textContent = `${currentUser.name} 님`;
+
+  setupCalendar();
+  loadPeriodSummary();
+}
+
+document.getElementById('btn-logout').addEventListener('click', async () => {
+  await api('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/';
+});
+
+init();
+</script>
+</body>
+</html>

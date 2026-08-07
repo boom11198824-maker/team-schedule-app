@@ -156,6 +156,7 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
       <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
       <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
       <a href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
+      <a href="/fee-calendar.html" id="nav-fee-calendar" class="btn-secondary" style="display:none">💰 수임료 캘린더</a>
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
       <span id="user-name" class="user-name"></span>
       <button id="btn-logout" class="btn-secondary">로그아웃</button>
@@ -475,6 +476,7 @@ const BACK_TARGETS = {
   clients: { href: '/clients.html', label: '← 의뢰인 목록으로' },
   consultations: { href: '/consultations.html', label: '← 상담관리로' },
   cases: { href: '/cases.html', label: '← 사건관리로' },
+  'fee-calendar': { href: '/fee-calendar.html', label: '← 수임료 캘린더로' },
 };
 function backTarget() {
   const from = new URLSearchParams(window.location.search).get('from');
@@ -1006,6 +1008,7 @@ async function init() {
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
   if (currentUser.role === 'admin') {
     document.getElementById('nav-settings').style.display = 'inline-block';
+    document.getElementById('nav-fee-calendar').style.display = 'inline-block';
   }
 
   try { sheetsStatus = await api('/api/sheets/status'); } catch {}

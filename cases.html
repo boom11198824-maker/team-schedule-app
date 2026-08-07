@@ -274,6 +274,7 @@ main { max-width: 900px; margin: 0 auto; padding: 20px; }
       <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
       <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
       <a id="btn-client-search" href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
+      <a href="/fee-calendar.html" id="nav-fee-calendar" class="btn-secondary" style="display:none">💰 수임료 캘린더</a>
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
       <button id="btn-sheets-export" class="btn-secondary" style="display:none">📊 구글시트로 내보내기</button>
       <span id="user-name" class="user-name"></span>
@@ -1034,6 +1035,7 @@ async function init() {
   if (currentUser.role === 'admin') {
     document.getElementById('btn-sheets-export').style.display = 'inline-block';
     document.getElementById('nav-settings').style.display = 'inline-block';
+    document.getElementById('nav-fee-calendar').style.display = 'inline-block';
   }
   await refreshSheetsStatus();
   await loadClients();

@@ -248,6 +248,13 @@ try {
   if (!String(err.message).includes('duplicate column')) throw err;
 }
 
+// 팀 스케줄에 자동 동기화되던 수임료 일정을 완전히 제거한다 (2026-08 결정: 수임료는
+// 전용 캘린더(fee-calendar.html)에서만 관리하고, 팀 스케줄에는 더 이상 노출하지 않는다).
+// is_private=1 은 수임료 동기화 전용으로만 쓰이던 컬럼이라 이 조건만으로 안전하게 지울 수 있다.
+// 매 서버 시작마다 실행해도 무해하다(idempotent) — 더 이상 생성되지 않으므로 이후엔 0건이 지워진다.
+db.exec('DELETE FROM schedules WHERE is_private = 1');
+db.exec('UPDATE case_fee_installments SET schedule_id = NULL WHERE schedule_id IS NOT NULL');
+
 // 앱 전역 기본값 설정(담당직원/담당변호사 기본값 등) — 단일 행(id=1)만 사용
 db.exec(`
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -1079,11 +1086,7 @@ app.delete('/api/cases/:id', requireLogin, async (req, res) => {
   }
   db.prepare('DELETE FROM case_tasks WHERE case_id = ?').run(existing.id);
 
-  // 수임료 납부일정에 연결된 팀 스케줄(비공개 일정)도 함께 삭제한다.
-  const installments = db.prepare('SELECT * FROM case_fee_installments WHERE case_id = ?').all(existing.id);
-  for (const inst of installments) {
-    try { deleteFeeInstallmentSchedule(inst); } catch (err) { console.error('수임료 일정에 연결된 팀 스케줄 삭제 실패:', err.message); }
-  }
+  // 수임료 납부일정은 더 이상 팀 스케줄과 동기화되지 않으므로(수임료 전용 캘린더에서만 관리) 그냥 지운다.
   db.prepare('DELETE FROM case_fee_installments WHERE case_id = ?').run(existing.id);
   db.prepare('DELETE FROM case_fees WHERE case_id = ?').run(existing.id);
   db.prepare('DELETE FROM case_files WHERE case_id = ?').run(existing.id);
@@ -1154,54 +1157,9 @@ function formatManwon(amount) {
   return (Number.isInteger(man) ? man : man.toFixed(1)).toString();
 }
 
-// 사건 상세페이지의 수임료 납부회차(installment) 하나를 팀 스케줄의 비공개 일정과 항상
-// 동일한 데이터로 유지한다 (OSMU: 사용자가 두 곳에 따로 입력하지 않는다).
-// - 납부예정일이 있으면: 연결된 일정이 없으면 새로 만들고, 있으면 내용만 갱신한다.
-// - 납부예정일이 없으면: 캘린더에 표시할 날짜가 없으므로 연결된 일정이 있다면 지운다.
-// 구글 캘린더로는 내보내지 않는다 — 이 일정은 관리자만 봐야 하는데, 구글 캘린더는 다른
-// 사람과 공유되어 있을 수 있어 "관리자 전용" 원칙이 깨질 수 있기 때문이다.
-function syncFeeInstallmentSchedule(installment, adminUserId) {
-  const caseRow = db.prepare('SELECT client_name FROM cases WHERE id = ?').get(installment.case_id);
-  const clientName = (caseRow && caseRow.client_name) || '';
-
-  if (!installment.due_date) {
-    if (installment.schedule_id) {
-      db.prepare('DELETE FROM schedules WHERE id = ?').run(installment.schedule_id);
-      db.prepare('UPDATE case_fee_installments SET schedule_id = NULL WHERE id = ?').run(installment.id);
-    }
-    return;
-  }
-
-  const title = `[수임료] ${clientName} ${installment.seq}차 납부 ${formatManwon(installment.amount)}만원`;
-  const memoParts = [];
-  if (installment.status === '완료' && installment.paid_date) memoParts.push(`납부일: ${installment.paid_date}`);
-  if (installment.memo) memoParts.push(installment.memo);
-  const description = memoParts.join(' / ');
-  const dateTime = toAllDayDateTime(installment.due_date);
-
-  const linked = installment.schedule_id ? db.prepare('SELECT id FROM schedules WHERE id = ?').get(installment.schedule_id) : null;
-  if (linked) {
-    db.prepare(
-      `UPDATE schedules SET title=?, description=?, start_at=?, end_at=?, category=?, updated_at=datetime('now') WHERE id = ?`
-    ).run(title, description, dateTime, dateTime, '기타', linked.id);
-    return;
-  }
-
-  const info = db
-    .prepare(
-      `INSERT INTO schedules (title, description, location, start_at, end_at, all_day, assignee_name, category, created_by, is_private)
-       VALUES (?, ?, '', ?, ?, 1, '', '기타', ?, 1)`
-    )
-    .run(title, description, dateTime, dateTime, adminUserId);
-  db.prepare('UPDATE case_fee_installments SET schedule_id = ? WHERE id = ?').run(info.lastInsertRowid, installment.id);
-}
-
-// 납부 회차 자체가 삭제될 때 연결된 비공개 일정도 함께 지운다.
-function deleteFeeInstallmentSchedule(installment) {
-  if (installment && installment.schedule_id) {
-    db.prepare('DELETE FROM schedules WHERE id = ?').run(installment.schedule_id);
-  }
-}
+// (예전에는 여기서 수임료 납부회차를 팀 스케줄의 비공개 일정과 동기화했다. 팀 스케줄이 수임료
+// 일정으로 지저분해진다는 피드백에 따라 2026-08부터는 수임료 전용 캘린더(fee-calendar.html,
+// /api/admin/fee-calendar)에서만 보여주고 팀 스케줄과는 더 이상 연동하지 않는다.)
 
 app.get('/api/cases/:id/fee', requireAdmin, (req, res) => {
   const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
@@ -1239,13 +1197,8 @@ app.post('/api/cases/:id/fee-installments', requireAdmin, (req, res) => {
   `).run(existing.id, Number(seq) || 1, Number(amount) || 0, due_date || '', safeStatus, safeStatus === '완료' ? (paid_date || '') : '', memo || '');
 
   const installment = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(info.lastInsertRowid);
-  try {
-    syncFeeInstallmentSchedule(installment, req.user.id);
-  } catch (err) {
-    console.error('수임료 납부일정 → 팀 스케줄 동기화 실패:', err.message);
-  }
 
-  res.status(201).json(db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(installment.id));
+  res.status(201).json(installment);
 });
 
 app.patch('/api/fee-installments/:id', requireAdmin, (req, res) => {
@@ -1266,25 +1219,77 @@ app.patch('/api/fee-installments/:id', requireAdmin, (req, res) => {
     .run(updated.seq, updated.amount, updated.due_date, updated.status, updated.paid_date, updated.memo, existing.id);
 
   const fresh = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(existing.id);
-  try {
-    syncFeeInstallmentSchedule(fresh, req.user.id);
-  } catch (err) {
-    console.error('수임료 납부일정 → 팀 스케줄 동기화 실패:', err.message);
-  }
 
-  res.json(db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(existing.id));
+  res.json(fresh);
 });
 
 app.delete('/api/fee-installments/:id', requireAdmin, (req, res) => {
   const existing = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '납부 회차를 찾을 수 없습니다.' });
-  try {
-    deleteFeeInstallmentSchedule(existing);
-  } catch (err) {
-    console.error('수임료 납부일정에 연결된 팀 스케줄 삭제 실패:', err.message);
-  }
   db.prepare('DELETE FROM case_fee_installments WHERE id = ?').run(existing.id);
   res.json({ ok: true });
+});
+
+/* ---- 수임료 전용 캘린더 (관리자 전용) ----
+   팀 스케줄과는 완전히 분리된, 읽기 전용 뷰다. case_fee_installments가 원본이므로(OSMU)
+   이 화면은 데이터를 새로 만들지 않고 항상 그 원본을 그대로 읽어서 보여준다. */
+
+app.get('/api/admin/fee-calendar', requireAdmin, (req, res) => {
+  const { start, end } = req.query;
+  const start10 = start ? String(start).slice(0, 10) : null;
+  const end10 = end ? String(end).slice(0, 10) : null;
+
+  const conditions = ["fi.due_date IS NOT NULL", "fi.due_date != ''"];
+  const params = [];
+  if (start10) { conditions.push('fi.due_date >= ?'); params.push(start10); }
+  if (end10) { conditions.push('fi.due_date < ?'); params.push(end10); }
+
+  const rows = db
+    .prepare(
+      `SELECT fi.*, c.client_name FROM case_fee_installments fi
+       JOIN cases c ON c.id = fi.case_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY fi.due_date ASC`
+    )
+    .all(...params);
+  res.json(rows);
+});
+
+// "정산기간": 매달 25일 ~ 다음달 24일 (예상수임료 집계 기준). 오늘 실제 날짜를 기준으로
+// 항상 고정 계산한다 — 캘린더 화면에서 다른 달로 이동해도 사이드 요약은 이 기간에서 바뀌지 않는다.
+function computeSettlementPeriod(today) {
+  const y = today.getFullYear();
+  const m = today.getMonth(); // 0-indexed
+  const pad2 = (n) => String(n).padStart(2, '0');
+  let startY, startM, endY, endM;
+  if (today.getDate() >= 25) {
+    startY = y; startM = m;
+    endY = m === 11 ? y + 1 : y; endM = (m + 1) % 12;
+  } else {
+    endY = y; endM = m;
+    startY = m === 0 ? y - 1 : y; startM = m === 0 ? 11 : m - 1;
+  }
+  return {
+    start: `${startY}-${pad2(startM + 1)}-25`,
+    end: `${endY}-${pad2(endM + 1)}-24`,
+  };
+}
+
+app.get('/api/admin/fee-calendar/period-summary', requireAdmin, (req, res) => {
+  const { start, end } = computeSettlementPeriod(new Date());
+  const rows = db
+    .prepare(
+      `SELECT status, COALESCE(SUM(amount), 0) AS total FROM case_fee_installments
+       WHERE due_date >= ? AND due_date <= ? GROUP BY status`
+    )
+    .all(start, end);
+  let completed = 0;
+  let upcoming = 0;
+  rows.forEach((r) => {
+    if (r.status === '완료') completed += r.total;
+    else upcoming += r.total;
+  });
+  res.json({ start, end, completed, upcoming, total: completed + upcoming });
 });
 
 /* ---- /api/case-tasks (사건별 서류/보정 일정) ---- */
@@ -1325,7 +1330,12 @@ function caseTaskToGoogleEvent(task) {
 }
 
 app.get('/api/case-tasks', requireLogin, async (req, res) => {
-  const { status, caseId } = req.query;
+  const { status, caseId, start, end } = req.query;
+  // start/end: 팀 스케줄 달력(app.html)이 보이는 기간만 요청할 때 쓰는 선택적 필터.
+  // /api/schedules와 마찬가지로 yyyy-mm-dd 앞 10자리만 비교해 due_date(날짜만 있음)와 맞춘다.
+  const start10 = start ? String(start).slice(0, 10) : null;
+  const end10 = end ? String(end).slice(0, 10) : null;
+  const inRange = (r) => (!start10 || r.due_date >= start10) && (!end10 || r.due_date < end10);
 
   // 구글시트가 [일정_보정관리]의 원본으로 연동되어 있으면 시트를 실시간으로 읽어 보여준다
   // (직원이 시트에 입력한 내용이 그대로 반영됨). 연동 안 되어 있거나 읽기 실패 시 SQLite로 폴백.
@@ -1335,6 +1345,7 @@ app.get('/api/case-tasks', requireLogin, async (req, res) => {
       let rows = sheetTasks;
       if (status) rows = rows.filter((r) => r.status === status);
       if (caseId) rows = rows.filter((r) => String(r.case_id) === String(caseId));
+      if (start10 || end10) rows = rows.filter(inRange);
       rows.sort((a, b) => a.due_date.localeCompare(b.due_date));
       return res.json(rows);
     }
@@ -1346,6 +1357,8 @@ app.get('/api/case-tasks', requireLogin, async (req, res) => {
   const params = [];
   if (status) { conditions.push('status = ?'); params.push(status); }
   if (caseId) { conditions.push('case_id = ?'); params.push(caseId); }
+  if (start10) { conditions.push('due_date >= ?'); params.push(start10); }
+  if (end10) { conditions.push('due_date < ?'); params.push(end10); }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   // case_id/due_date/status 에 인덱스가 있어 데이터가 수천 건으로 늘어나도
   // 필터가 걸린 조회는 빠르게 동작합니다 (전체 스캔 대신 인덱스 탐색).
@@ -1669,17 +1682,10 @@ app.post('/api/admin/fee-migration-run', requireAdmin, async (req, res) => {
         const already = db.prepare('SELECT id FROM case_fee_installments WHERE case_id = ? AND seq = ?').get(matchedCase.id, ins.seq);
         if (already) { installmentsSkippedExisting++; return; }
 
-        const info = db.prepare(`
+        db.prepare(`
           INSERT INTO case_fee_installments (case_id, seq, amount, due_date, status, paid_date, memo)
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(matchedCase.id, ins.seq, ins.amount, ins.due_date, ins.status, ins.paid_date, ins.memo);
-
-        const installment = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(info.lastInsertRowid);
-        try {
-          syncFeeInstallmentSchedule(installment, req.user.id);
-        } catch (err) {
-          console.error('수임료 이식 중 팀 스케줄 동기화 실패:', err.message);
-        }
         installmentsInserted++;
       });
     });
@@ -2093,6 +2099,13 @@ app.get('/consult-report.html', (req, res) => {
 app.get('/settings.html', (req, res) => {
   if (!req.session || !req.session.userId) return res.redirect('/');
   res.sendFile(path.join(__dirname, 'settings.html'));
+});
+
+app.get('/fee-calendar.html', (req, res) => {
+  // 관리자 여부는 프론트에서(다른 관리자 전용 페이지와 동일한 패턴으로) 다시 확인하고,
+  // 실제 데이터 보호는 /api/admin/fee-calendar* 쪽 requireAdmin 미들웨어가 담당한다.
+  if (!req.session || !req.session.userId) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'fee-calendar.html'));
 });
 
 app.get('/', (req, res) => { res.sendFile(path.join(__dirname, 'index.html')); });

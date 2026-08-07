@@ -171,6 +171,7 @@ table.client-table td.muted { color: var(--text-muted); }
       <a href="/cases.html" class="btn-secondary">⚖️ 사건관리</a>
       <a href="/consultations.html" class="btn-secondary">🗂️ 상담관리</a>
       <a href="/clients.html" class="btn-secondary active">📋 의뢰인 목록</a>
+      <a href="/fee-calendar.html" id="nav-fee-calendar" class="btn-secondary" style="display:none">💰 수임료 캘린더</a>
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="display:none">⚙️ 설정</a>
       <span id="user-name" class="user-name"></span>
       <button id="btn-logout" class="btn-secondary">로그아웃</button>
@@ -438,6 +439,7 @@ async function init() {
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
   if (currentUser.role === 'admin') {
     document.getElementById('nav-settings').style.display = 'inline-block';
+    document.getElementById('nav-fee-calendar').style.display = 'inline-block';
   }
 
   // 의뢰인목록은 이제 앱 자체 사건(cases) 데이터만 사용하므로 구글시트 연동 여부와 무관하게 항상 보여준다.

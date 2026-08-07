@@ -270,6 +270,51 @@ try {
 db.exec('DELETE FROM schedules WHERE is_private = 1');
 db.exec('UPDATE case_fee_installments SET schedule_id = NULL WHERE schedule_id IS NOT NULL');
 
+// 결제방식(현금/계좌이체/신용카드)과 입금자명(의뢰인 본인이 아닌 다른 사람 이름으로 입금된 경우
+// 대비) — 각 납부 회차마다 따로 기록한다. 예전에는 memo 텍스트에 "결제방식: OOO"로만 적어뒀는데,
+// 통장매칭·통계 등에서 구조적으로 활용할 수 없어 전용 컬럼으로 분리한다.
+for (const col of ['payment_method TEXT', 'payer_name TEXT']) {
+  try {
+    db.exec(`ALTER TABLE case_fee_installments ADD COLUMN ${col}`);
+  } catch (err) {
+    if (!String(err.message).includes('duplicate column')) throw err;
+  }
+}
+
+// (일회성, 매 시작마다 실행해도 안전 — 한 번 옮겨진 행은 더 이상 조건에 안 걸림)
+// 기존 memo의 "결제방식: OOO [/ 통장매칭 자동확인(입금자명)]" 텍스트를 새 컬럼으로 옮기고
+// memo에서는 그 부분만 제거한다 — 정보를 잃는 게 아니라 검색/통계가 가능한 구조로 옮기는 것.
+const FEE_PAYMENT_METHOD_ALIASES = {
+  '현금': '현금', '현금완납': '현금', '현금납부': '현금',
+  '계좌이체': '계좌이체', '계좌': '계좌이체', '이체': '계좌이체', '무통장입금': '계좌이체', '통장입금': '계좌이체',
+  '카드': '신용카드', '카드결제': '신용카드', '신용카드': '신용카드', '카드납부': '신용카드',
+};
+{
+  const legacyRows = db.prepare(`
+    SELECT id, memo FROM case_fee_installments
+    WHERE (payment_method IS NULL OR payment_method = '') AND memo LIKE '%결제방식:%'
+  `).all();
+  legacyRows.forEach((row) => {
+    const memo = String(row.memo || '');
+    const methodMatch = memo.match(/결제방식:\s*([^\s/]+)/);
+    if (!methodMatch) return;
+    const method = FEE_PAYMENT_METHOD_ALIASES[methodMatch[1].trim()];
+    if (!method) return; // 매핑 안 되는 표현은 memo를 그대로 두고 건드리지 않는다 (데이터 손실 방지)
+
+    const payerMatch = memo.match(/통장매칭\s*자동확인\((.*?)\)/);
+    const payerName = payerMatch ? payerMatch[1].trim() : '';
+
+    let cleanedMemo = memo
+      .replace(/결제방식:\s*[^\s/]+/, '')
+      .replace(/통장매칭\s*자동확인\(.*?\)/, '통장매칭 자동확인')
+      .replace(/^\s*\/\s*/, '').replace(/\s*\/\s*$/, '').replace(/\s*\/\s*\/\s*/, ' / ')
+      .trim();
+
+    db.prepare('UPDATE case_fee_installments SET payment_method = ?, payer_name = ?, memo = ? WHERE id = ?')
+      .run(method, payerName, cleanedMemo, row.id);
+  });
+}
+
 // 앱 전역 기본값 설정(담당직원/담당변호사 기본값 등) — 단일 행(id=1)만 사용
 db.exec(`
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -1164,6 +1209,7 @@ app.delete('/api/case-files/:fileId', requireAdmin, (req, res) => {
 /* ---- /api/cases/:id/fee (수임료 총액 + 회차별 분할납부) ---- */
 
 const FEE_INSTALLMENT_STATUSES = ['예정', '완료'];
+const FEE_PAYMENT_METHODS = ['현금', '계좌이체', '신용카드'];
 
 // 금액(원)을 "105만원"처럼 만원 단위 문자열로 바꾼다. 팀 스케줄 제목에서 한눈에 금액을
 // 알아볼 수 있도록 하기 위함이며, 만원 단위로 딱 안 떨어지는 금액은 소수 첫째자리까지 표시한다.
@@ -1203,13 +1249,14 @@ app.post('/api/cases/:id/fee-installments', requireAdmin, (req, res) => {
   const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
 
-  const { seq, amount, due_date, status, paid_date, memo } = req.body || {};
+  const { seq, amount, due_date, status, paid_date, memo, payment_method, payer_name } = req.body || {};
   const safeStatus = FEE_INSTALLMENT_STATUSES.includes(status) ? status : '예정';
+  const safeMethod = FEE_PAYMENT_METHODS.includes(payment_method) ? payment_method : '';
 
   const info = db.prepare(`
-    INSERT INTO case_fee_installments (case_id, seq, amount, due_date, status, paid_date, memo)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(existing.id, Number(seq) || 1, Number(amount) || 0, due_date || '', safeStatus, safeStatus === '완료' ? (paid_date || '') : '', memo || '');
+    INSERT INTO case_fee_installments (case_id, seq, amount, due_date, status, paid_date, memo, payment_method, payer_name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(existing.id, Number(seq) || 1, Number(amount) || 0, due_date || '', safeStatus, safeStatus === '완료' ? (paid_date || '') : '', memo || '', safeMethod, String(payer_name || '').trim());
 
   const installment = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(info.lastInsertRowid);
 
@@ -1220,7 +1267,7 @@ app.patch('/api/fee-installments/:id', requireAdmin, (req, res) => {
   const existing = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: '납부 회차를 찾을 수 없습니다.' });
 
-  const { seq, amount, due_date, status, paid_date, memo } = req.body || {};
+  const { seq, amount, due_date, status, paid_date, memo, payment_method, payer_name } = req.body || {};
   const safeStatus = status !== undefined ? (FEE_INSTALLMENT_STATUSES.includes(status) ? status : existing.status) : existing.status;
   const updated = {
     seq: seq !== undefined ? (Number(seq) || existing.seq) : existing.seq,
@@ -1229,9 +1276,11 @@ app.patch('/api/fee-installments/:id', requireAdmin, (req, res) => {
     status: safeStatus,
     paid_date: safeStatus === '완료' ? (paid_date ?? existing.paid_date ?? '') : '',
     memo: memo ?? existing.memo,
+    payment_method: payment_method !== undefined ? (FEE_PAYMENT_METHODS.includes(payment_method) ? payment_method : '') : (existing.payment_method || ''),
+    payer_name: payer_name !== undefined ? String(payer_name || '').trim() : (existing.payer_name || ''),
   };
-  db.prepare(`UPDATE case_fee_installments SET seq=?, amount=?, due_date=?, status=?, paid_date=?, memo=?, updated_at=datetime('now') WHERE id = ?`)
-    .run(updated.seq, updated.amount, updated.due_date, updated.status, updated.paid_date, updated.memo, existing.id);
+  db.prepare(`UPDATE case_fee_installments SET seq=?, amount=?, due_date=?, status=?, paid_date=?, memo=?, payment_method=?, payer_name=?, updated_at=datetime('now') WHERE id = ?`)
+    .run(updated.seq, updated.amount, updated.due_date, updated.status, updated.paid_date, updated.memo, updated.payment_method, updated.payer_name, existing.id);
 
   const fresh = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(existing.id);
 
@@ -1472,10 +1521,12 @@ app.post('/api/admin/fee-calendar/confirm-matches', requireAdmin, (req, res) => 
     // 이미 완료 처리된 회차는 건너뛴다 (같은 미리보기를 실수로 두 번 확정하는 것을 막는 안전장치).
     if (!inst || inst.status === '완료') { skipped.push(m.installment_id); return; }
     const paidDate = String(m.paid_date || '').slice(0, 10) || inst.due_date;
-    const memoNote = `통장매칭 자동확인${m.memo ? `(${m.memo})` : ''}`;
-    const memo = [inst.memo, memoNote].filter(Boolean).join(' / ');
-    db.prepare(`UPDATE case_fee_installments SET status='완료', paid_date=?, memo=?, updated_at=datetime('now') WHERE id = ?`)
-      .run(paidDate, memo, inst.id);
+    const memo = [inst.memo, '통장매칭 자동확인'].filter(Boolean).join(' / ');
+    // 은행 입금 내역으로 매칭되는 건은 항상 계좌이체이고, 통장 내역의 입금자 표시(m.memo)가
+    // 곧 입금자명이다 — 별도로 다시 물어볼 필요 없이 그대로 구조화된 필드에 채운다(OSMU).
+    const payerName = String(m.memo || '').trim();
+    db.prepare(`UPDATE case_fee_installments SET status='완료', paid_date=?, memo=?, payment_method='계좌이체', payer_name=?, updated_at=datetime('now') WHERE id = ?`)
+      .run(paidDate, memo, payerName, inst.id);
     confirmed++;
   });
   res.json({ confirmed, skipped });

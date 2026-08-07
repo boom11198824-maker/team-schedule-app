@@ -412,7 +412,7 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
         </div>
 
         <table class="fee-table">
-          <thead><tr><th>회차</th><th>금액</th><th>납부예정일</th><th>상태</th><th>납부일</th><th></th></tr></thead>
+          <thead><tr><th>회차</th><th>금액</th><th>납부예정일</th><th>상태</th><th>납부일</th><th>결제방식</th><th>입금자명</th><th></th></tr></thead>
           <tbody id="fee-tbody"></tbody>
         </table>
         <p id="fee-empty-note" class="empty-note hidden">등록된 납부 회차가 없습니다.</p>
@@ -447,6 +447,21 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
             <div id="fee-paid-date-wrap" class="hidden">
               <label>납부일</label>
               <input type="text" class="date-field" id="fee-paid-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+            </div>
+            <div class="row">
+              <div>
+                <label>결제방식</label>
+                <select id="fee-payment-method">
+                  <option value="">미지정</option>
+                  <option value="현금">현금</option>
+                  <option value="계좌이체">계좌이체</option>
+                  <option value="신용카드">신용카드</option>
+                </select>
+              </div>
+              <div>
+                <label>입금자명 (의뢰인과 다른 경우만)</label>
+                <input type="text" id="fee-payer-name" placeholder="예: 홍길동 (비워두면 의뢰인 이름과 동일)" />
+              </div>
             </div>
             <label>메모</label>
             <input type="text" id="fee-installment-memo" />
@@ -907,6 +922,8 @@ async function renderFeeSection() {
         <td>${escapeHTML(i.due_date || '-')}</td>
         <td><span class="status-pill ${i.status === '완료' ? '완료' : '예정'}">${i.status}</span></td>
         <td>${escapeHTML(i.paid_date || '-')}</td>
+        <td>${escapeHTML(i.payment_method || '-')}</td>
+        <td>${escapeHTML(i.payer_name || '-')}</td>
         <td class="actions-cell"><button type="button" class="btn-small" data-edit-fee="${i.id}">편집</button></td>
       </tr>`).join('');
     tbody.querySelectorAll('[data-edit-fee]').forEach((btn) => {
@@ -926,6 +943,8 @@ function loadFeeIntoForm(item) {
   document.getElementById('fee-status').value = item.status;
   document.getElementById('fee-paid-date').value = item.paid_date || '';
   document.getElementById('fee-paid-date-wrap').classList.toggle('hidden', item.status !== '완료');
+  document.getElementById('fee-payment-method').value = item.payment_method || '';
+  document.getElementById('fee-payer-name').value = item.payer_name || '';
   document.getElementById('fee-installment-memo').value = item.memo || '';
   document.getElementById('fee-form-title').textContent = `${item.seq}회차 편집`;
   document.getElementById('btn-save-fee').textContent = '수정 저장';
@@ -962,6 +981,8 @@ document.getElementById('fee-form').addEventListener('submit', async (e) => {
     due_date: document.getElementById('fee-due').value,
     status: document.getElementById('fee-status').value,
     paid_date: document.getElementById('fee-paid-date').value,
+    payment_method: document.getElementById('fee-payment-method').value,
+    payer_name: document.getElementById('fee-payer-name').value.trim(),
     memo: document.getElementById('fee-installment-memo').value.trim(),
   };
   try {

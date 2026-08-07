@@ -1576,6 +1576,20 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
       paidPool.get(inst.amount).push(inst);
     });
 
+    // 이미 완료 처리된 회차 중 "그 입금일까지 정확히 기록되어 있는" 건은 별도로 더 강하게
+    // 체크한다 — 이름+금액+입금일(paid_date)이 통장 입금 건과 완전히 똑같으면, 그 입금은
+    // 이미 그 회차를 낸 걸로 확정된 게 100% 확실하다(같은 입금이 두 번 들어올 리 없으므로).
+    // 이 체크는 미납 회차 매칭(1~3단계)보다도 먼저 해야 한다 — 그렇지 않으면, 마침 같은
+    // 이름·같은 금액의 "다른" 미납 회차가 남아있을 때 이미 다른 회차에 쓰인 입금 하나를
+    // 두 회차의 증거로 중복 사용해버리는 사고가 난다(예: 신해숙 7/23 입금이 이미 3회차
+    // paid_date로 기록되어 있는데, 4회차도 같은 금액이라 그쪽으로 또 매칭되어버리는 경우).
+    const exactPaidDateMap = new Map(); // key: name|amount|date -> count
+    paid.forEach((inst) => {
+      if (!inst.client_name || !inst.paid_date) return;
+      const key = `${inst.client_name}|${inst.amount}|${inst.paid_date}`;
+      exactPaidDateMap.set(key, (exactPaidDateMap.get(key) || 0) + 1);
+    });
+
     const matched = []; // 이름+금액 유일 일치(또는 합산 일치) - 미리보기에서 기본 체크됨
     const review = []; // 후보가 여러 건이거나 금액만 맞음 - 사람이 직접 골라야 함
     const unmatched = []; // 후보가 아예 없음 (수임료가 아닌 입금일 가능성)
@@ -1585,6 +1599,30 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
       .slice()
       .sort((a, b) => a.date.localeCompare(b.date))
       .forEach((dep) => {
+        // 0) 이 입금(이름+금액+날짜)이 이미 완료 처리된 어떤 회차의 paid_date와 정확히 똑같으면,
+        //    그 회차를 위한 입금이 확실하므로 더 볼 것 없이 "이미 처리됨"으로 건너뛴다.
+        if (dep.memo) {
+          let exactName = null;
+          for (const name of new Set([...pool.values()].flat().map((c) => c.client_name))) {
+            if (name && dep.memo.startsWith(name.trim())) { exactName = name; break; }
+          }
+          // pool에 이름이 없을 수도 있으니(완료 회차만 있는 사람) paidPool 쪽 이름도 함께 확인
+          if (!exactName) {
+            for (const inst of paid) {
+              if (inst.client_name && dep.memo.startsWith(inst.client_name.trim())) { exactName = inst.client_name; break; }
+            }
+          }
+          if (exactName) {
+            const exactKey = `${exactName}|${dep.amount}|${dep.date}`;
+            const count = exactPaidDateMap.get(exactKey) || 0;
+            if (count > 0) {
+              exactPaidDateMap.set(exactKey, count - 1);
+              alreadyHandledCount++;
+              return;
+            }
+          }
+        }
+
         // 1) 미납 회차 중 이름+금액이 정확히 하나만 맞는 경우 - 가장 확실한 매칭이므로 항상
         //    최우선으로 확인한다("이미 처리됨"보다 먼저 봐야, 같은 사람의 다른 미납 회차가
         //    엉뚱하게 "이미 낸 걸로" 조용히 묻히는 일이 없다).

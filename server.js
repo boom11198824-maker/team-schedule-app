@@ -1808,7 +1808,9 @@ app.get('/api/admin/fee-migration-preview', requireAdmin, async (req, res) => {
 
 // 실제로 이식을 실행한다 (진홍 님 확인 후 1회성으로 사용).
 // - 사건이 없는 의뢰인은 의뢰인 명단(이름/전화/법원/사건번호)으로 사건을 자동 생성한다.
-// - 회차는 "예정"(아직 납부 안 된 미래 일정)만 이식한다 — 이미 완료된 과거(2024년 등) 회차는 건너뛴다.
+// - 회차는 예정/완료 모두 이식한다 — 과거에 이미 완납된 회차도 문서/이력 자산이므로 함께 옮긴다
+//   (이전 버전은 완료된 회차를 건너뛰어, 시트상 완납 처리된 의뢰인은 앱에 회차 이력이 전혀 없는 상태가 되는
+//   문제가 있었음 — 완납된 회차도 반드시 이식하도록 수정함).
 // - 결제방식은 메모에 "결제방식: OOO"로 같이 적는다.
 // - 다시 실행해도 안전하도록(idempotent), 이미 그 case_id + seq 조합의 회차가 있으면 건드리지 않고 건너뛴다.
 app.post('/api/admin/fee-migration-run', requireAdmin, async (req, res) => {
@@ -1829,8 +1831,9 @@ app.post('/api/admin/fee-migration-run', requireAdmin, async (req, res) => {
 
     let casesCreated = 0;
     let installmentsInserted = 0;
+    let installmentsInsertedPaid = 0;
+    let installmentsInsertedUpcoming = 0;
     let installmentsSkippedExisting = 0;
-    let installmentsSkippedPaid = 0;
     const problems = [];
 
     sheetClients.forEach((c) => {
@@ -1860,7 +1863,6 @@ app.post('/api/admin/fee-migration-run', requireAdmin, async (req, res) => {
       }
 
       c.installments.forEach((ins) => {
-        if (ins.status !== '예정') { installmentsSkippedPaid++; return; }
         const already = db.prepare('SELECT id FROM case_fee_installments WHERE case_id = ? AND seq = ?').get(matchedCase.id, ins.seq);
         if (already) { installmentsSkippedExisting++; return; }
 
@@ -1869,14 +1871,16 @@ app.post('/api/admin/fee-migration-run', requireAdmin, async (req, res) => {
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(matchedCase.id, ins.seq, ins.amount, ins.due_date, ins.status, ins.paid_date, ins.memo);
         installmentsInserted++;
+        if (ins.status === '완료') installmentsInsertedPaid++; else installmentsInsertedUpcoming++;
       });
     });
 
     res.json({
       casesCreated,
       installmentsInserted,
+      installmentsInsertedPaid,
+      installmentsInsertedUpcoming,
       installmentsSkippedExisting,
-      installmentsSkippedPaid,
       problems,
     });
   } catch (err) {

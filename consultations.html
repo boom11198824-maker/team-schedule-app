@@ -101,7 +101,15 @@ table.client-table tr.client-row { cursor: pointer; }
 table.client-table tr.client-row:hover td { background: var(--status-muted-bg); }
 table.client-table td.name-cell { font-weight: 700; white-space: nowrap; }
 table.client-table td.muted { color: var(--text-muted); }
-.memo-cell { color: var(--text-secondary); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memo-cell { color: var(--text-secondary); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.memo-cell:hover { text-decoration: underline; }
+.memo-cell.empty { cursor: default; }
+.memo-cell.empty:hover { text-decoration: none; }
+.memo-detail-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--gridline); font-size: 14px; }
+.memo-detail-row:last-child { border-bottom: none; }
+.memo-detail-row .label { color: var(--text-muted); flex: 0 0 auto; }
+.memo-detail-row .value { font-weight: 600; text-align: right; }
+.memo-detail-rest { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--gridline); font-size: 13px; color: var(--text-secondary); white-space: pre-wrap; }
 
 .status-pill { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
 .status-pill.상담중 { background: var(--status-warning-bg); color: var(--status-warning); }
@@ -200,6 +208,18 @@ table.client-table td.muted { color: var(--text-muted); }
     <p id="list-empty" class="empty-note hidden">조건에 맞는 상담 기록이 없습니다.</p>
   </main>
 
+  <div id="memo-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2 id="memo-modal-title">상담 요약</h2>
+      <div id="memo-modal-fields"></div>
+      <div id="memo-modal-rest" class="memo-detail-rest hidden"></div>
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button type="button" class="btn-secondary" id="btn-close-memo">닫기</button>
+      </div>
+    </div>
+  </div>
+
   <div id="new-modal" class="modal-backdrop hidden">
     <div class="modal">
       <h2>새 상담 등록</h2>
@@ -259,8 +279,85 @@ function todayStr() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/* ---- 메모: 상담결과리포트에서 자동 저장한 "[상담결과리포트 자동요약]...[/상담결과리포트 자동요약]" 블록을
+   목록에서는 "지역/소득형태/소득/채무" 형태로 짧게 보여주고, 클릭하면 전체 항목을 팝업으로 보여준다.
+   (같은 데이터를 파싱만 다르게 하는 것이라 서버/DB는 그대로 - OSMU) ---- */
+const MEMO_AUTO_START = '[상담결과리포트 자동요약]';
+const MEMO_AUTO_END = '[/상담결과리포트 자동요약]';
+
+function parseAutoMemo(memo) {
+  const src = memo || '';
+  const si = src.indexOf(MEMO_AUTO_START);
+  const ei = src.indexOf(MEMO_AUTO_END);
+  if (si < 0 || ei < 0 || ei <= si) return null;
+  const block = src.slice(si + MEMO_AUTO_START.length, ei).trim();
+  const fields = {};
+  block.split('\n').forEach((line) => {
+    const idx = line.indexOf(':');
+    if (idx < 0) return;
+    fields[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  });
+  const rest = (src.slice(0, si) + src.slice(ei + MEMO_AUTO_END.length)).trim();
+  return { fields, rest };
+}
+
+// "4,400,000원" 같은 원 단위 문자열을 "440만원"/"2억"처럼 압축해서 목록에서 한눈에 보이게 한다.
+function compactAmount(rawStr) {
+  const n = parseInt(String(rawStr || '').replace(/[^0-9]/g, ''), 10);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n >= 100000000) {
+    const eok = Math.floor(n / 100000000);
+    const manRest = Math.round((n % 100000000) / 10000);
+    return manRest > 0 ? `${eok}억${manRest}만원` : `${eok}억`;
+  }
+  return `${Math.round(n / 10000)}만원`;
+}
+
+function memoCellHTML(c) {
+  const parsed = parseAutoMemo(c.memo);
+  if (!parsed) return escapeHTML(c.memo || '');
+  const f = parsed.fields;
+  const parts = [f['지역'], f['소득형태'], compactAmount(f['소득'])].filter(Boolean);
+  const debt = compactAmount(f['채무금액']);
+  if (debt) parts.push(`채무${debt}`);
+  return escapeHTML(parts.join('/') + (parts.length ? '/' : ''));
+}
+
+function openMemoModal(c) {
+  const parsed = parseAutoMemo(c.memo);
+  const fieldsEl = document.getElementById('memo-modal-fields');
+  const restEl = document.getElementById('memo-modal-rest');
+  document.getElementById('memo-modal-title').textContent = `${c.client_name} 상담 요약`;
+
+  if (!parsed) {
+    fieldsEl.innerHTML = '';
+    restEl.textContent = c.memo || '(메모 없음)';
+    restEl.classList.remove('hidden');
+  } else {
+    const f = parsed.fields;
+    const rows = ['지역', '소득형태', '소득', '채무금액', '월 예상변제금']
+      .filter((k) => f[k])
+      .map((k) => `<div class="memo-detail-row"><span class="label">${escapeHTML(k)}</span><span class="value">${escapeHTML(f[k])}</span></div>`)
+      .join('');
+    fieldsEl.innerHTML = rows;
+    if (parsed.rest) {
+      restEl.textContent = parsed.rest;
+      restEl.classList.remove('hidden');
+    } else {
+      restEl.textContent = '';
+      restEl.classList.add('hidden');
+    }
+  }
+  document.getElementById('memo-modal').classList.remove('hidden');
+}
+
+document.getElementById('btn-close-memo').addEventListener('click', () => {
+  document.getElementById('memo-modal').classList.add('hidden');
+});
+
 function rowHTML(c) {
   const statusLabel = c.status || '미지정';
+  const memoText = memoCellHTML(c);
   return `
     <tr class="client-row" data-id="${c.id}">
       <td class="name-cell">${escapeHTML(c.client_name)}</td>
@@ -268,7 +365,7 @@ function rowHTML(c) {
       <td class="muted">${escapeHTML(c.assignee_name || '-')}</td>
       <td class="muted">${escapeHTML(c.intake_date || '-')}</td>
       <td><span class="status-pill ${escapeHTML(statusLabel)}">${escapeHTML(statusLabel)}</span></td>
-      <td class="memo-cell">${escapeHTML(c.memo || '')}</td>
+      <td class="memo-cell ${memoText ? '' : 'empty'}" data-memo-id="${c.id}">${memoText}</td>
     </tr>`;
 }
 
@@ -300,6 +397,13 @@ function render() {
   tbody.querySelectorAll('[data-id]').forEach((row) => {
     row.addEventListener('click', () => {
       window.location.href = `/case-detail.html?id=${row.dataset.id}&from=consultations`;
+    });
+  });
+  tbody.querySelectorAll('[data-memo-id]').forEach((cell) => {
+    cell.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const c = filtered.find((x) => String(x.id) === cell.dataset.memoId);
+      if (c && c.memo) openMemoModal(c);
     });
   });
 }

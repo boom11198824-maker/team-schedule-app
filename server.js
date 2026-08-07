@@ -315,6 +315,24 @@ const FEE_PAYMENT_METHOD_ALIASES = {
   });
 }
 
+// match_source(완료 처리 방식): 통장매칭 자동확인으로 완료됐는지, 사람이 직접 완료 체크했는지
+// 구분해서 기록한다. 값은 '자동'(통장매칭) / '수동'(사람이 직접 완료 체크) 두 가지.
+try {
+  db.exec("ALTER TABLE case_fee_installments ADD COLUMN match_source TEXT");
+} catch (err) {
+  if (!String(err.message).includes('duplicate column')) throw err;
+}
+// (일회성, 매 시작마다 실행해도 안전) 이미 완료 처리돼 있는데 아직 match_source가 없는 기존
+// 행은, memo에 남아있는 "통장매칭 자동확인" 흔적으로 판단해서 자동/수동을 나눠 채워 넣는다.
+db.exec(`
+  UPDATE case_fee_installments SET match_source = '자동'
+  WHERE status = '완료' AND (match_source IS NULL OR match_source = '') AND memo LIKE '%통장매칭 자동확인%'
+`);
+db.exec(`
+  UPDATE case_fee_installments SET match_source = '수동'
+  WHERE status = '완료' AND (match_source IS NULL OR match_source = '')
+`);
+
 // 앱 전역 기본값 설정(담당직원/담당변호사 기본값 등) — 단일 행(id=1)만 사용
 db.exec(`
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -1253,10 +1271,13 @@ app.post('/api/cases/:id/fee-installments', requireAdmin, (req, res) => {
   const safeStatus = FEE_INSTALLMENT_STATUSES.includes(status) ? status : '예정';
   const safeMethod = FEE_PAYMENT_METHODS.includes(payment_method) ? payment_method : '';
 
+  // 새로 추가하면서 바로 "완료"로 만드는 경우는 화면에서 사람이 직접 입력한 것이므로 수동으로 기록한다.
+  const matchSource = safeStatus === '완료' ? '수동' : '';
+
   const info = db.prepare(`
-    INSERT INTO case_fee_installments (case_id, seq, amount, due_date, status, paid_date, memo, payment_method, payer_name)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(existing.id, Number(seq) || 1, Number(amount) || 0, due_date || '', safeStatus, safeStatus === '완료' ? (paid_date || '') : '', memo || '', safeMethod, String(payer_name || '').trim());
+    INSERT INTO case_fee_installments (case_id, seq, amount, due_date, status, paid_date, memo, payment_method, payer_name, match_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(existing.id, Number(seq) || 1, Number(amount) || 0, due_date || '', safeStatus, safeStatus === '완료' ? (paid_date || '') : '', memo || '', safeMethod, String(payer_name || '').trim(), matchSource);
 
   const installment = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(info.lastInsertRowid);
 
@@ -1279,8 +1300,16 @@ app.patch('/api/fee-installments/:id', requireAdmin, (req, res) => {
     payment_method: payment_method !== undefined ? (FEE_PAYMENT_METHODS.includes(payment_method) ? payment_method : '') : (existing.payment_method || ''),
     payer_name: payer_name !== undefined ? String(payer_name || '').trim() : (existing.payer_name || ''),
   };
-  db.prepare(`UPDATE case_fee_installments SET seq=?, amount=?, due_date=?, status=?, paid_date=?, memo=?, payment_method=?, payer_name=?, updated_at=datetime('now') WHERE id = ?`)
-    .run(updated.seq, updated.amount, updated.due_date, updated.status, updated.paid_date, updated.memo, updated.payment_method, updated.payer_name, existing.id);
+  // match_source(자동/수동): 이 화면(사건상세)에서 예정 → 완료로 바꾸는 순간은 사람이 직접 체크한
+  // 것이므로 '수동'으로 기록한다. 이미 완료 상태였던 걸 다른 항목만 고치는 경우(예: 메모 수정)는
+  // 기존에 통장매칭으로 자동확인된 기록을 덮어쓰지 않도록 그대로 둔다. 완료를 다시 예정으로
+  // 되돌리면 더 이상 해당 없으므로 비운다.
+  let matchSource = existing.match_source || '';
+  if (updated.status === '완료' && existing.status !== '완료') matchSource = '수동';
+  else if (updated.status !== '완료') matchSource = '';
+
+  db.prepare(`UPDATE case_fee_installments SET seq=?, amount=?, due_date=?, status=?, paid_date=?, memo=?, payment_method=?, payer_name=?, match_source=?, updated_at=datetime('now') WHERE id = ?`)
+    .run(updated.seq, updated.amount, updated.due_date, updated.status, updated.paid_date, updated.memo, updated.payment_method, updated.payer_name, matchSource, existing.id);
 
   const fresh = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(existing.id);
 
@@ -1565,7 +1594,7 @@ app.post('/api/admin/fee-calendar/confirm-matches', requireAdmin, (req, res) => 
     // 은행 입금 내역으로 매칭되는 건은 항상 계좌이체이고, 통장 내역의 입금자 표시(m.memo)가
     // 곧 입금자명이다 — 별도로 다시 물어볼 필요 없이 그대로 구조화된 필드에 채운다(OSMU).
     const payerName = String(m.memo || '').trim();
-    db.prepare(`UPDATE case_fee_installments SET status='완료', paid_date=?, memo=?, payment_method='계좌이체', payer_name=?, updated_at=datetime('now') WHERE id = ?`)
+    db.prepare(`UPDATE case_fee_installments SET status='완료', paid_date=?, memo=?, payment_method='계좌이체', payer_name=?, match_source='자동', updated_at=datetime('now') WHERE id = ?`)
       .run(paidDate, memo, payerName, inst.id);
     confirmed++;
   });

@@ -127,6 +127,7 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
 .status-pill.예정 { background: var(--status-muted-bg); color: var(--text-secondary); }
 .status-pill.진행중 { background: var(--status-warning-bg); color: var(--status-warning); }
 .status-pill.완료 { background: var(--status-good-bg); color: var(--status-good); }
+.match-source-tag { font-size: 10px; color: var(--text-muted); margin-left: 4px; white-space: nowrap; }
 
 .mini-form { background: #f7f8fa; border: 1px solid var(--gridline); border-radius: 10px; padding: 12px; margin-top: 12px; }
 .mini-form-title { font-size: 12px; font-weight: 700; color: var(--text-secondary); margin-bottom: 6px; }
@@ -920,7 +921,7 @@ async function renderFeeSection() {
         <td>${i.seq}회차</td>
         <td>${formatWon(i.amount)}</td>
         <td>${escapeHTML(i.due_date || '-')}</td>
-        <td><span class="status-pill ${i.status === '완료' ? '완료' : '예정'}">${i.status}</span></td>
+        <td><span class="status-pill ${i.status === '완료' ? '완료' : '예정'}">${i.status}</span>${i.status === '완료' && i.match_source ? `<span class="match-source-tag">(${escapeHTML(i.match_source)})</span>` : ''}</td>
         <td>${escapeHTML(i.paid_date || '-')}</td>
         <td>${escapeHTML(i.payment_method || '-')}</td>
         <td>${escapeHTML(i.payer_name || '-')}</td>

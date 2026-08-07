@@ -121,7 +121,7 @@ table.client-table td.muted { color: var(--text-muted); }
 }
 .modal-backdrop.hidden { display: none; }
 .modal {
-  background: white; border-radius: 14px; padding: 28px; width: 460px; max-width: 92vw;
+  background: white; border-radius: 14px; padding: 28px; width: 520px; max-width: 92vw;
   max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.25);
 }
 .modal h2 { margin-top: 0; font-size: 18px; }
@@ -133,7 +133,9 @@ table.client-table td.muted { color: var(--text-muted); }
 }
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .checkbox-row input { width: auto; }
-.modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 20px; }
+.modal-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; row-gap: 10px; margin-top: 20px; }
+.modal-actions button { white-space: nowrap; }
+.modal-actions .btn-primary.full-width { flex: 1 1 100%; margin-top: 2px; }
 .spacer { flex: 1; }
 .hidden { display: none !important; }
 .error-text { color: #b23a3a; font-size: 13px; margin: 6px 0 0; min-height: 0; }
@@ -225,7 +227,7 @@ table.client-table td.muted { color: var(--text-muted); }
         <div class="spacer"></div>
         <button type="button" class="btn-secondary" id="btn-close-client-info">닫기</button>
         <button type="button" class="btn-secondary" id="btn-add-schedule-for-client">+ 일정 추가</button>
-        <button type="button" class="btn-primary" id="btn-open-case-detail">사건상세 페이지 열기 →</button>
+        <button type="button" class="btn-primary full-width" id="btn-open-case-detail">사건상세 페이지 열기 →</button>
       </div>
     </div>
   </div>
@@ -394,7 +396,7 @@ function openClientInfoModal(c) {
     // 의뢰인목록은 이제 앱 자체 사건(cases)에서 바로 만들어지므로, 목록에 뜬 의뢰인은
     // 이미 사건 ID(case_id)를 갖고 있다 - 굳이 다시 찾거나 만들 필요 없이 바로 이동한다.
     if (c.case_id) {
-      window.location.href = `/case-detail.html?id=${c.case_id}`;
+      window.location.href = `/case-detail.html?id=${c.case_id}&from=clients`;
       return;
     }
     openCaseErrorEl.textContent = '';
@@ -410,7 +412,7 @@ function openClientInfoModal(c) {
           court_case_no: c.court_case_no || '',
         }),
       });
-      window.location.href = `/case-detail.html?id=${result.id}`;
+      window.location.href = `/case-detail.html?id=${result.id}&from=clients`;
     } catch (err) {
       openCaseErrorEl.textContent = err.message;
       btn.disabled = false;

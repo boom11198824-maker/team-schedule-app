@@ -298,7 +298,7 @@ function render() {
   tbody.innerHTML = filtered.map(rowHTML).join('');
   tbody.querySelectorAll('[data-id]').forEach((row) => {
     row.addEventListener('click', () => {
-      window.location.href = `/case-detail.html?id=${row.dataset.id}`;
+      window.location.href = `/case-detail.html?id=${row.dataset.id}&from=consultations`;
     });
   });
 }
@@ -363,7 +363,7 @@ document.getElementById('btn-save-new').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     const created = await api('/api/cases', { method: 'POST', body: JSON.stringify(payload) });
-    window.location.href = `/case-detail.html?id=${created.id}`;
+    window.location.href = `/case-detail.html?id=${created.id}&from=consultations`;
   } catch (err) {
     errorEl.textContent = err.message;
     btn.disabled = false;

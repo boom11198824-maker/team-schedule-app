@@ -162,7 +162,7 @@ input, select, textarea {
   </header>
 
   <main>
-    <a href="/cases.html" class="back-link">← 사건관리로</a>
+    <a href="/cases.html" class="back-link" id="back-link">← 사건관리로</a>
 
     <p id="load-error" class="error-text hidden"></p>
 
@@ -467,6 +467,24 @@ let currentCase = null;
 let sheetsStatus = { tasksManagedInSheet: false, url: null };
 const caseId = new URLSearchParams(window.location.search).get('id');
 
+// 어느 목록 화면에서 들어왔는지에 따라 "뒤로가기" 링크를 그 화면으로 되돌려준다
+// (예: 의뢰인목록에서 들어왔으면 뒤로가기도 의뢰인목록으로 - 항상 사건관리로 고정되지 않도록).
+// from 파라미터가 없는 옛 링크/북마크는 기존과 동일하게 사건관리로 이동한다.
+const BACK_TARGETS = {
+  clients: { href: '/clients.html', label: '← 의뢰인 목록으로' },
+  consultations: { href: '/consultations.html', label: '← 상담관리로' },
+  cases: { href: '/cases.html', label: '← 사건관리로' },
+};
+function backTarget() {
+  const from = new URLSearchParams(window.location.search).get('from');
+  return BACK_TARGETS[from] || BACK_TARGETS.cases;
+}
+(function initBackLink() {
+  const backLink = document.getElementById('back-link');
+  backLink.href = backTarget().href;
+  backLink.textContent = backTarget().label;
+})();
+
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
   if (res.status === 401) { window.location.href = '/'; throw new Error('로그인이 필요합니다.'); }
@@ -712,7 +730,7 @@ document.getElementById('btn-delete-case').addEventListener('click', async () =>
   if (!confirm('이 사건과 관련된 모든 일정·수임료 정보를 삭제할까요? (구글 캘린더에 등록된 일정도 함께 삭제됩니다)')) return;
   try {
     await api(`/api/cases/${caseId}`, { method: 'DELETE' });
-    window.location.href = '/cases.html';
+    window.location.href = backTarget().href;
   } catch (err) {
     document.getElementById('info-error').textContent = err.message;
   }

@@ -1644,6 +1644,51 @@ app.post('/api/admin/fee-calendar/confirm-matches', requireAdmin, (req, res) => 
   res.json({ confirmed, skipped });
 });
 
+// 이름 목록을 받아서 각 의뢰인의 미납(완료가 아닌) 회차를 한 번에 "수동 완납" 처리한다.
+// 통장매칭 없이 사무실에서 직접 확인하고 일괄로 완납 처리해야 할 때(예: 현금 수납 확인 후
+// 한꺼번에 정리) 쓰는 관리자 전용 기능. 동명이인이 있으면 어떤 사건인지 알 수 없으므로 절대
+// 추측해서 처리하지 않고 ambiguous로 분류해 사람이 직접 확인하게 한다(데이터를 잃지 않는다).
+app.post('/api/admin/fee-calendar/bulk-complete', requireAdmin, (req, res) => {
+  const names = Array.isArray(req.body.names)
+    ? Array.from(new Set(req.body.names.map((n) => String(n || '').trim()).filter(Boolean)))
+    : [];
+  if (!names.length) return res.status(400).json({ error: '이름 목록이 필요합니다.' });
+
+  const today = new Date();
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const todayStr = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+
+  const completed = [];
+  const ambiguous = [];
+  const notFound = [];
+  const alreadyPaid = [];
+
+  const updateStmt = db.prepare(
+    `UPDATE case_fee_installments SET status='완료', paid_date=?, match_source='수동', updated_at=datetime('now') WHERE id = ?`
+  );
+
+  names.forEach((name) => {
+    const cases = db.prepare('SELECT id, client_name, phone FROM cases WHERE client_name = ?').all(name);
+    if (cases.length === 0) { notFound.push(name); return; }
+    if (cases.length > 1) {
+      ambiguous.push({ name, cases: cases.map((c) => ({ case_id: c.id, phone: c.phone })) });
+      return;
+    }
+    const caseId = cases[0].id;
+    const unpaid = db.prepare("SELECT * FROM case_fee_installments WHERE case_id = ? AND status != '완료'").all(caseId);
+    if (unpaid.length === 0) { alreadyPaid.push(name); return; }
+    unpaid.forEach((inst) => updateStmt.run(todayStr, inst.id));
+    completed.push({
+      name,
+      case_id: caseId,
+      count: unpaid.length,
+      totalAmount: unpaid.reduce((sum, i) => sum + i.amount, 0),
+    });
+  });
+
+  res.json({ paidDate: todayStr, completed, ambiguous, notFound, alreadyPaid });
+});
+
 /* ---- /api/case-tasks (사건별 서류/보정 일정) ---- */
 
 const CASE_TASK_STATUSES = ['예정', '진행중', '완료'];

@@ -301,9 +301,37 @@ function parseAutoMemo(memo) {
   return { fields, rest };
 }
 
-// "4,400,000원" 같은 원 단위 문자열을 "440만원"/"2억"처럼 압축해서 목록에서 한눈에 보이게 한다.
+// 상담결과리포트는 설정(amtMode)에 따라 "4,400,000원" 같은 순수 숫자 형식으로도,
+// "1억 2,300만원"처럼 억/만 단위가 섞인 한글 형식으로도 저장될 수 있다.
+// 단순히 숫자만 뽑아 이어붙이면 "1억 2,300만원"이 "12300"(=1만2300원)으로 잘못 해석되므로
+// 억/만 단위를 각각 인식해서 실제 금액(원)으로 정확히 환산한다.
+function parseWonAmount(rawStr) {
+  const s = String(rawStr || '').trim();
+  if (!s) return 0;
+  if (s.indexOf('억') >= 0 || s.indexOf('만') >= 0) {
+    let total = 0;
+    let rest = s;
+    const eokM = rest.match(/([\d,]+)\s*억/);
+    if (eokM) {
+      total += parseInt(eokM[1].replace(/,/g, ''), 10) * 100000000;
+      rest = rest.slice(eokM.index + eokM[0].length);
+    }
+    const manM = rest.match(/([\d,]+)\s*만/);
+    if (manM) {
+      total += parseInt(manM[1].replace(/,/g, ''), 10) * 10000;
+      rest = rest.slice(manM.index + manM[0].length);
+    }
+    const wonM = rest.match(/([\d,]+)/);
+    if (wonM) total += parseInt(wonM[1].replace(/,/g, ''), 10);
+    return total;
+  }
+  const digits = s.replace(/[^0-9]/g, '');
+  return digits ? parseInt(digits, 10) : 0;
+}
+
+// 환산된 원 단위 금액을 "440만원"/"2억"처럼 압축해서 목록에서 한눈에 보이게 한다.
 function compactAmount(rawStr) {
-  const n = parseInt(String(rawStr || '').replace(/[^0-9]/g, ''), 10);
+  const n = parseWonAmount(rawStr);
   if (!Number.isFinite(n) || n <= 0) return '';
   if (n >= 100000000) {
     const eok = Math.floor(n / 100000000);

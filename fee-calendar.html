@@ -62,6 +62,12 @@ button.btn-secondary, a.btn-secondary {
 }
 button.btn-secondary:hover, a.btn-secondary:hover { background: #e2e6ed; }
 a.btn-secondary.active { background: var(--brand-navy); color: #fff; border-color: var(--brand-navy); }
+button.btn-primary {
+  background: var(--brand-coral); color: white; border: none; padding: 10px 18px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+button.btn-primary:hover { background: var(--brand-coral-dark); }
+button.btn-primary:disabled { background: #d7dce6; cursor: not-allowed; }
 
 main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .layout { display: grid; grid-template-columns: 1fr 300px; gap: 20px; align-items: start; }
@@ -97,6 +103,40 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 #calendar .fc-event { cursor: pointer; font-size: 12px; }
 #calendar .fc-toolbar-title { font-size: 16px; }
 
+/* ---- 거래내역 업로드 / 매칭 미리보기 모달 ---- */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex;
+  align-items: center; justify-content: center; z-index: 100; padding: 20px;
+}
+.modal-backdrop.hidden { display: none; }
+.modal {
+  background: white; border-radius: 14px; padding: 28px; width: 720px; max-width: 100%;
+  max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+}
+.modal h2 { margin-top: 0; font-size: 18px; }
+.modal h3 { font-size: 14px; margin: 20px 0 8px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+.modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 22px; }
+.spacer { flex: 1; }
+.hidden { display: none !important; }
+.error-text { color: #b23a3a; font-size: 13px; margin: 6px 0 0; min-height: 0; }
+
+.match-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--gridline); margin-bottom: 6px; font-size: 13px;
+}
+.match-row input[type="checkbox"] { width: auto; flex-shrink: 0; }
+.match-row .dep-info { color: var(--text-secondary); white-space: nowrap; }
+.match-row .arrow { color: var(--text-muted); }
+.match-row .target { flex: 1; font-weight: 600; }
+.match-row .target select { width: 100%; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; font-family: inherit; }
+.match-row .reason { font-size: 11px; color: var(--status-warning); }
+.match-row.matched { background: var(--status-good-bg); border-color: var(--status-good); }
+
+.unmatched-list { font-size: 12px; color: var(--text-muted); max-height: 140px; overflow-y: auto; }
+.unmatched-list div { padding: 3px 0; border-bottom: 1px dashed var(--gridline); }
+
+.import-summary { font-size: 13px; color: var(--text-secondary); background: var(--surface-1); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; }
+
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
 }
@@ -105,6 +145,7 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
   .topbar-left h1 { font-size: 16px; }
   button.btn-secondary, a.btn-secondary { padding: 7px 10px; font-size: 12px; }
   main { padding: 12px; }
+  .match-row { flex-wrap: wrap; }
 }
 </style>
 </head>
@@ -120,6 +161,8 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
       <a href="/clients.html" class="btn-secondary">📋 의뢰인 목록</a>
       <a href="/fee-calendar.html" class="btn-secondary active">💰 수임료 캘린더</a>
       <a href="/settings.html" class="btn-secondary">⚙️ 설정</a>
+      <button id="btn-upload-statement" class="btn-secondary">📥 거래내역 업로드</button>
+      <input type="file" id="statement-file-input" accept=".xls,.xlsx,.csv" style="display:none" />
       <span id="user-name" class="user-name"></span>
       <button id="btn-logout" class="btn-secondary">로그아웃</button>
     </div>
@@ -155,6 +198,35 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
       </div>
     </div>
   </main>
+
+  <div id="import-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>📥 통장거래내역 매칭</h2>
+      <p class="import-summary" id="import-summary"></p>
+      <p id="import-error" class="error-text"></p>
+
+      <div id="import-matched-section" class="hidden">
+        <h3>✅ 자동 매칭 <span id="matched-count">0</span>건 <span style="font-weight:400; color:var(--text-muted); font-size:12px;">(이름·금액이 정확히 일치 — 기본 선택됨)</span></h3>
+        <div id="matched-list"></div>
+      </div>
+
+      <div id="import-review-section" class="hidden">
+        <h3>🔎 확인 필요 <span id="review-count">0</span>건 <span style="font-weight:400; color:var(--text-muted); font-size:12px;">(직접 골라서 선택해주세요)</span></h3>
+        <div id="review-list"></div>
+      </div>
+
+      <div id="import-unmatched-section" class="hidden">
+        <h3>➖ 미매칭 입금 <span id="unmatched-count">0</span>건 <span style="font-weight:400; color:var(--text-muted); font-size:12px;">(참고용 — 수임료가 아닐 수 있습니다)</span></h3>
+        <div id="unmatched-list" class="unmatched-list"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="btn-confirm-matches" class="btn-primary">선택 항목 완료 처리</button>
+        <span class="spacer"></span>
+        <button id="btn-close-import" class="btn-secondary">닫기</button>
+      </div>
+    </div>
+  </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.11/index.global.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.11/locales-all.global.min.js"></script>
@@ -249,6 +321,138 @@ async function loadPeriodSummary() {
     document.getElementById('period-range').textContent = '불러오기 실패';
   }
 }
+
+/* ---- 통장거래내역 업로드 → 자동 매칭 미리보기 ----
+   업로드하면 서버가 미리보기만 계산해서 돌려주고, 실제로 완료 처리는 여기서 "선택 항목
+   완료 처리" 버튼을 눌러야만 일어난다 (오매칭이 나면 수임료 데이터가 틀어질 수 있어서
+   자동으로는 절대 반영하지 않음 — 사람이 마지막으로 확인하는 구조). */
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderMatchRow({ deposit, installment_id, client_name, seq, amount, due_date }) {
+  const row = document.createElement('div');
+  row.className = 'match-row matched';
+  row.innerHTML = `
+    <input type="checkbox" class="match-checkbox" data-installment-id="${installment_id}" data-paid-date="${deposit.date}" data-memo="${escapeHtml(deposit.memo)}" checked />
+    <span class="dep-info">${deposit.date} · ${won(deposit.amount)}<br />"${escapeHtml(deposit.memo || '(입금자명 없음)')}"</span>
+    <span class="arrow">→</span>
+    <span class="target">${escapeHtml(client_name)} ${seq}회차 (${won(amount)}, 예정일 ${due_date || '-'})</span>
+  `;
+  return row;
+}
+
+function renderReviewRow(item) {
+  const row = document.createElement('div');
+  row.className = 'match-row';
+  const options = ['<option value="">선택 안 함</option>'].concat(
+    item.candidates.map((c) => `<option value="${c.installment_id}">${escapeHtml(c.client_name)} ${c.seq}회차 (${won(c.amount)}, 예정일 ${c.due_date || '-'})</option>`)
+  );
+  row.innerHTML = `
+    <input type="checkbox" class="match-checkbox" disabled />
+    <span class="dep-info">${item.deposit.date} · ${won(item.deposit.amount)}<br />"${escapeHtml(item.deposit.memo || '(입금자명 없음)')}"<br /><span class="reason">⚠️ ${escapeHtml(item.reason)}</span></span>
+    <span class="arrow">→</span>
+    <span class="target"><select class="review-select">${options.join('')}</select></span>
+  `;
+  const checkbox = row.querySelector('.match-checkbox');
+  const select = row.querySelector('.review-select');
+  select.addEventListener('change', () => {
+    checkbox.checked = !!select.value;
+    checkbox.disabled = !select.value;
+    checkbox.dataset.installmentId = select.value;
+    checkbox.dataset.paidDate = item.deposit.date;
+    checkbox.dataset.memo = item.deposit.memo || '';
+  });
+  return row;
+}
+
+function renderImportPreview(data) {
+  document.getElementById('import-error').textContent = '';
+  document.getElementById('import-summary').textContent =
+    `자동 매칭 ${data.matched.length}건 · 확인 필요 ${data.review.length}건 · 미매칭 ${data.unmatched.length}건`;
+
+  const matchedSection = document.getElementById('import-matched-section');
+  const matchedList = document.getElementById('matched-list');
+  matchedList.innerHTML = '';
+  document.getElementById('matched-count').textContent = data.matched.length;
+  matchedSection.classList.toggle('hidden', data.matched.length === 0);
+  data.matched.forEach((m) => matchedList.appendChild(renderMatchRow(m)));
+
+  const reviewSection = document.getElementById('import-review-section');
+  const reviewList = document.getElementById('review-list');
+  reviewList.innerHTML = '';
+  document.getElementById('review-count').textContent = data.review.length;
+  reviewSection.classList.toggle('hidden', data.review.length === 0);
+  data.review.forEach((r) => reviewList.appendChild(renderReviewRow(r)));
+
+  const unmatchedSection = document.getElementById('import-unmatched-section');
+  const unmatchedList = document.getElementById('unmatched-list');
+  unmatchedList.innerHTML = '';
+  document.getElementById('unmatched-count').textContent = data.unmatched.length;
+  unmatchedSection.classList.toggle('hidden', data.unmatched.length === 0);
+  data.unmatched.forEach((dep) => {
+    const div = document.createElement('div');
+    div.textContent = `${dep.date} · ${won(dep.amount)} · ${dep.memo || '(입금자명 없음)'}`;
+    unmatchedList.appendChild(div);
+  });
+}
+
+document.getElementById('btn-upload-statement').addEventListener('click', () => {
+  document.getElementById('statement-file-input').click();
+});
+
+document.getElementById('statement-file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+
+  document.getElementById('import-modal').classList.remove('hidden');
+  document.getElementById('import-summary').textContent = '분석 중...';
+  document.getElementById('import-error').textContent = '';
+  ['import-matched-section', 'import-review-section', 'import-unmatched-section']
+    .forEach((id) => document.getElementById(id).classList.add('hidden'));
+
+  try {
+    const res = await fetch('/api/admin/fee-calendar/import-preview', { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
+    renderImportPreview(data);
+  } catch (err) {
+    document.getElementById('import-summary').textContent = '';
+    document.getElementById('import-error').textContent = err.message;
+  } finally {
+    e.target.value = '';
+  }
+});
+
+document.getElementById('btn-close-import').addEventListener('click', () => {
+  document.getElementById('import-modal').classList.add('hidden');
+});
+
+document.getElementById('btn-confirm-matches').addEventListener('click', async () => {
+  const checkboxes = Array.from(document.querySelectorAll('.match-checkbox:checked'));
+  if (!checkboxes.length) { alert('완료 처리할 항목을 선택해주세요.'); return; }
+  const matches = checkboxes.map((cb) => ({
+    installment_id: Number(cb.dataset.installmentId),
+    paid_date: cb.dataset.paidDate,
+    memo: cb.dataset.memo,
+  }));
+  const btn = document.getElementById('btn-confirm-matches');
+  btn.disabled = true;
+  try {
+    const result = await api('/api/admin/fee-calendar/confirm-matches', { method: 'POST', body: JSON.stringify({ matches }) });
+    alert(`${result.confirmed}건을 완료 처리했습니다.${result.skipped.length ? ` (이미 처리돼있던 ${result.skipped.length}건은 건너뜀)` : ''}`);
+    document.getElementById('import-modal').classList.add('hidden');
+    calendar.refetchEvents();
+    loadPeriodSummary();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 async function init() {
   try {

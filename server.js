@@ -15,6 +15,7 @@ const { google } = require('googleapis');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
+const XLSX = require('xlsx');
 
 /* ------------------------------------------------------------------ */
 /* 데이터베이스                                                        */
@@ -1290,6 +1291,180 @@ app.get('/api/admin/fee-calendar/period-summary', requireAdmin, (req, res) => {
     else upcoming += r.total;
   });
   res.json({ start, end, completed, upcoming, total: completed + upcoming });
+});
+
+/* ---- 수임료 통장거래내역 매칭 (관리자 전용) ----
+   은행에서 받은 거래내역 엑셀(.xls/.xlsx)을 업로드하면, 입금 건들을 미납(예정) 상태인
+   납부회차와 "금액 + 입금자명"으로 자동 매칭해서 미리보기만 보여준다. 실제로 완료 처리는
+   관리자가 확인 후 /confirm-matches를 호출할 때만 이뤄지고, 자동으로는 절대 반영하지 않는다
+   (동명이인·분할입금 등으로 오매칭이 나면 수임료 데이터가 틀어질 수 있기 때문).
+   원본 엑셀은 디스크에 저장하지 않고 이 요청을 처리하는 동안만 메모리에서 읽는다. */
+
+const bankStatementUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!['.xls', '.xlsx', '.csv'].includes(ext)) {
+      return cb(new Error('엑셀(.xls/.xlsx) 또는 CSV 파일만 업로드할 수 있습니다.'));
+    }
+    cb(null, true);
+  },
+});
+
+const BANK_DATE_HEADERS = ['거래일자', '거래일', '날짜'];
+const BANK_DEPOSIT_HEADERS = ['입금(원)', '입금액', '입금'];
+const BANK_MEMO_HEADERS = ['내용', '적요2', '보낸분', '보낸사람', '입금자명', '메모'];
+
+// 엑셀 원본 위쪽에는 계좌번호/조회기간 같은 안내 줄이 은행마다 다른 줄 수만큼 붙어있어서,
+// 실제 표 헤더("거래일자" 등)가 몇 번째 줄인지 매번 다르다. 앞 20줄 안에서 찾는다.
+function findBankHeaderRow(rows) {
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const row = (rows[i] || []).map((c) => String(c == null ? '' : c).trim());
+    if (row.some((c) => BANK_DATE_HEADERS.includes(c))) return { index: i, header: row };
+  }
+  return null;
+}
+
+function findColumn(header, aliases, exclude) {
+  for (const alias of aliases) {
+    const idx = header.findIndex((h) => h === alias);
+    if (idx >= 0) return idx;
+  }
+  for (const alias of aliases) {
+    const idx = header.findIndex((h) => h.includes(alias) && (!exclude || !h.includes(exclude)));
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+// 엑셀 날짜 셀이 "2026-01-02" 같은 문자열이 아니라 진짜 날짜 서식(일련번호)으로 들어있는
+// 은행 양식도 있어서, 숫자로 오면 엑셀 날짜 기준일(1899-12-30)로부터 다시 계산해준다.
+function excelSerialToISODate(serial) {
+  const utcDays = Math.floor(Number(serial) - 25569);
+  const d = new Date(utcDays * 86400 * 1000);
+  const pad2 = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+}
+
+function parseBankStatement(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+  const headerInfo = findBankHeaderRow(rows);
+  if (!headerInfo) throw new Error('거래내역 표를 찾지 못했습니다 ("거래일자" 컬럼이 있는 은행 원본 파일인지 확인해주세요).');
+  const { index: headerIdx, header } = headerInfo;
+  const dateCol = findColumn(header, BANK_DATE_HEADERS);
+  const depositCol = findColumn(header, BANK_DEPOSIT_HEADERS, '출금');
+  const memoCol = findColumn(header, BANK_MEMO_HEADERS);
+  if (dateCol < 0 || depositCol < 0) {
+    throw new Error('"거래일자"와 "입금(원)" 컬럼을 인식하지 못했습니다. 은행에서 받은 원본 거래내역 엑셀인지 확인해주세요.');
+  }
+
+  const deposits = [];
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.every((c) => c === '' || c === undefined || c === null)) continue;
+    const amount = Number(row[depositCol]) || 0;
+    if (amount <= 0) continue; // 출금 건은 매칭 대상이 아니다.
+    const rawDate = row[dateCol];
+    const date = typeof rawDate === 'number'
+      ? excelSerialToISODate(rawDate)
+      : String(rawDate || '').trim().slice(0, 10).replace(/[./]/g, '-');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const memo = memoCol >= 0 ? String(row[memoCol] || '').trim() : '';
+    deposits.push({ date, amount, memo });
+  }
+  return deposits;
+}
+
+app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
+  bankStatementUpload.single('file')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    if (!req.file) return res.status(400).json({ error: '업로드할 거래내역 파일을 선택해주세요.' });
+
+    let deposits;
+    try {
+      deposits = parseBankStatement(req.file.buffer);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    // 매칭 후보 풀: 아직 미납(예정)인 모든 납부회차를 금액별로 묶어둔다. 이름+금액이 유일하게
+    // 일치해 자동 확정되는 순간 그 회차는 풀에서 빼서, 같은 회차가 다른 입금 건에 또 잡히지 않게 한다.
+    const unpaid = db
+      .prepare(
+        `SELECT fi.*, c.client_name FROM case_fee_installments fi
+         JOIN cases c ON c.id = fi.case_id WHERE fi.status = '예정'`
+      )
+      .all();
+    const pool = new Map();
+    unpaid.forEach((inst) => {
+      if (!pool.has(inst.amount)) pool.set(inst.amount, []);
+      pool.get(inst.amount).push(inst);
+    });
+
+    const matched = []; // 이름+금액 유일 일치 - 미리보기에서 기본 체크됨
+    const review = []; // 후보가 여러 건이거나 금액만 맞음 - 사람이 직접 골라야 함
+    const unmatched = []; // 후보가 아예 없음 (수임료가 아닌 입금일 가능성)
+
+    deposits
+      .slice()
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .forEach((dep) => {
+        const candidates = pool.get(dep.amount) || [];
+        const nameMatches = dep.memo
+          ? candidates.filter((c) => c.client_name && dep.memo.startsWith(c.client_name.trim()))
+          : [];
+
+        if (nameMatches.length === 1) {
+          const inst = nameMatches[0];
+          candidates.splice(candidates.indexOf(inst), 1);
+          matched.push({ deposit: dep, installment: inst });
+        } else if (nameMatches.length > 1) {
+          review.push({ deposit: dep, candidates: nameMatches, reason: '같은 이름·금액의 회차가 여러 건입니다' });
+        } else if (candidates.length > 0) {
+          // candidates는 pool에 남아있는 실제 배열이라, 뒤에서 다른 입금이 매칭돼 splice로
+          // 제거되면 이미 review에 넣어둔 이 항목까지 같이 바뀌어버린다 - 복사본을 넣어야 한다.
+          review.push({ deposit: dep, candidates: candidates.slice(), reason: '금액은 일치하지만 입금자명이 다릅니다' });
+        } else {
+          unmatched.push(dep);
+        }
+      });
+
+    const toCandidate = (c) => ({
+      installment_id: c.id, case_id: c.case_id, client_name: c.client_name,
+      seq: c.seq, amount: c.amount, due_date: c.due_date,
+    });
+
+    res.json({
+      matched: matched.map((m) => ({ deposit: m.deposit, ...toCandidate(m.installment) })),
+      review: review.map((r) => ({ deposit: r.deposit, reason: r.reason, candidates: r.candidates.map(toCandidate) })),
+      unmatched,
+    });
+  });
+});
+
+app.post('/api/admin/fee-calendar/confirm-matches', requireAdmin, (req, res) => {
+  const { matches } = req.body || {};
+  if (!Array.isArray(matches) || matches.length === 0) {
+    return res.status(400).json({ error: '확정할 매칭 항목이 없습니다.' });
+  }
+  let confirmed = 0;
+  const skipped = [];
+  matches.forEach((m) => {
+    const inst = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(m.installment_id);
+    // 이미 완료 처리된 회차는 건너뛴다 (같은 미리보기를 실수로 두 번 확정하는 것을 막는 안전장치).
+    if (!inst || inst.status === '완료') { skipped.push(m.installment_id); return; }
+    const paidDate = String(m.paid_date || '').slice(0, 10) || inst.due_date;
+    const memoNote = `통장매칭 자동확인${m.memo ? `(${m.memo})` : ''}`;
+    const memo = [inst.memo, memoNote].filter(Boolean).join(' / ');
+    db.prepare(`UPDATE case_fee_installments SET status='완료', paid_date=?, memo=?, updated_at=datetime('now') WHERE id = ?`)
+      .run(paidDate, memo, inst.id);
+    confirmed++;
+  });
+  res.json({ confirmed, skipped });
 });
 
 /* ---- /api/case-tasks (사건별 서류/보정 일정) ---- */

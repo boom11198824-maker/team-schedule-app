@@ -105,6 +105,7 @@ input, select, textarea {
 }
 .row { display: flex; gap: 12px; }
 .row > div { flex: 1; }
+input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
 .spacer { flex: 1; }
 .actions-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
 .hidden { display: none !important; }
@@ -390,7 +391,7 @@ input, select, textarea {
         <div class="row" style="align-items:flex-end;">
           <div>
             <label>총 수임료 (원)</label>
-            <input type="number" id="fee-total" min="0" step="10000" placeholder="예: 3000000" />
+            <input type="text" class="money-field" id="fee-total" inputmode="numeric" placeholder="예: 3,000,000" />
           </div>
           <div>
             <label>메모</label>
@@ -426,7 +427,7 @@ input, select, textarea {
               </div>
               <div>
                 <label>금액 (원) *</label>
-                <input type="number" id="fee-amount" min="0" step="10000" required placeholder="예: 1000000" />
+                <input type="text" class="money-field" id="fee-amount" inputmode="numeric" required placeholder="예: 1,000,000" />
               </div>
             </div>
             <div class="row">
@@ -515,6 +516,21 @@ function maskDateInput(el) {
   });
 }
 document.querySelectorAll('input.date-field').forEach(maskDateInput);
+
+/* ---- 금액칸: 입력하는 동안 1,000단위 쉼표를 자동으로 넣어준다 (수임료 총액/회차 금액) ---- */
+function maskMoneyInput(el) {
+  el.addEventListener('input', () => {
+    const digits = el.value.replace(/\D/g, '');
+    el.value = digits ? Number(digits).toLocaleString('ko-KR') : '';
+  });
+}
+function moneyValue(el) {
+  return Number(String(el.value || '').replace(/\D/g, '')) || 0;
+}
+function setMoneyValue(el, n) {
+  el.value = n ? Number(n).toLocaleString('ko-KR') : '';
+}
+document.querySelectorAll('input.money-field').forEach(maskMoneyInput);
 
 /* ---- 사건유형별 현재단계 목록 ----
    개인회생만 정확한 절차 단계를 알고 있어 우선 반영했습니다. 개인파산/법인회생 등 다른 사건유형의
@@ -867,7 +883,7 @@ document.getElementById('fee-status').addEventListener('change', (e) => {
 
 async function renderFeeSection() {
   const fee = await api(`/api/cases/${caseId}/fee`);
-  document.getElementById('fee-total').value = fee.total_amount || '';
+  setMoneyValue(document.getElementById('fee-total'), fee.total_amount);
   document.getElementById('fee-memo').value = fee.memo || '';
 
   const paidTotal = fee.installments.filter((i) => i.status === '완료').reduce((sum, i) => sum + Number(i.amount || 0), 0);
@@ -903,7 +919,7 @@ async function renderFeeSection() {
 function loadFeeIntoForm(item) {
   document.getElementById('fee-id').value = item.id;
   document.getElementById('fee-seq').value = item.seq;
-  document.getElementById('fee-amount').value = item.amount;
+  setMoneyValue(document.getElementById('fee-amount'), item.amount);
   document.getElementById('fee-due').value = item.due_date || '';
   document.getElementById('fee-status').value = item.status;
   document.getElementById('fee-paid-date').value = item.paid_date || '';
@@ -923,7 +939,7 @@ document.getElementById('btn-save-fee-total').addEventListener('click', async ()
     await api(`/api/cases/${caseId}/fee`, {
       method: 'PUT',
       body: JSON.stringify({
-        total_amount: Number(document.getElementById('fee-total').value) || 0,
+        total_amount: moneyValue(document.getElementById('fee-total')),
         memo: document.getElementById('fee-memo').value.trim(),
       }),
     });
@@ -940,7 +956,7 @@ document.getElementById('fee-form').addEventListener('submit', async (e) => {
   const feeId = document.getElementById('fee-id').value;
   const payload = {
     seq: Number(document.getElementById('fee-seq').value) || 1,
-    amount: Number(document.getElementById('fee-amount').value) || 0,
+    amount: moneyValue(document.getElementById('fee-amount')),
     due_date: document.getElementById('fee-due').value,
     status: document.getElementById('fee-status').value,
     paid_date: document.getElementById('fee-paid-date').value,

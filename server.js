@@ -1540,9 +1540,30 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
       pool.get(inst.amount).push(inst);
     });
 
+    // 같은 의뢰인의 미납 회차를 이름별로도 묶어둔다 — 여러 회차를 한 번에 몰아서 낸 경우
+    // (예: 4월분+5월분을 5월에 합쳐서 납부) 금액이 아니라 "그 사람의 미납 회차 누적 합"으로
+    // 찾아야 하기 때문이다. pool과 같은 installment 객체를 공유하므로 removeFromPool()로
+    // 하나를 빼면 여기서도 함께 빠진다.
+    const byName = new Map();
+    unpaid.forEach((inst) => {
+      if (!inst.client_name) return;
+      if (!byName.has(inst.client_name)) byName.set(inst.client_name, []);
+      byName.get(inst.client_name).push(inst);
+    });
+    byName.forEach((list) => list.sort((a, b) => (a.due_date || '').localeCompare(b.due_date || '')));
+
+    function removeFromPool(inst) {
+      const amtArr = pool.get(inst.amount);
+      if (amtArr) { const i = amtArr.indexOf(inst); if (i >= 0) amtArr.splice(i, 1); }
+      const nameArr = byName.get(inst.client_name);
+      if (nameArr) { const i = nameArr.indexOf(inst); if (i >= 0) nameArr.splice(i, 1); }
+    }
+
     // 이미 완료 처리된(수동으로 직접 체크했든, 예전에 통장매칭으로 확정됐든) 회차도 이름+금액
     // 기준으로 따로 묶어둔다 — 그 회차의 입금 건은 통장매칭 기록이 남아있지 않아도 이미 처리가
-    // 끝난 것이므로, 미매칭/확인필요 목록에 노이즈로 띄우지 않고 그냥 건너뛴다.
+    // 끝난 것이므로, 미매칭/확인필요 목록에 노이즈로 띄우지 않고 그냥 건너뛴다. 단, 같은 이름·
+    // 금액의 회차를 이미 하나 완료 처리했다고 해서 그 사람의 "다른" 미납 회차(같은 금액)까지
+    // 전부 이미 처리된 것으로 착각하면 안 되므로, 확인할 때마다 하나씩 소모(splice)한다.
     const paid = db
       .prepare(
         `SELECT fi.*, c.client_name FROM case_fee_installments fi
@@ -1555,7 +1576,7 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
       paidPool.get(inst.amount).push(inst);
     });
 
-    const matched = []; // 이름+금액 유일 일치 - 미리보기에서 기본 체크됨
+    const matched = []; // 이름+금액 유일 일치(또는 합산 일치) - 미리보기에서 기본 체크됨
     const review = []; // 후보가 여러 건이거나 금액만 맞음 - 사람이 직접 골라야 함
     const unmatched = []; // 후보가 아예 없음 (수임료가 아닌 입금일 가능성)
     let alreadyHandledCount = 0;
@@ -1564,10 +1585,9 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
       .slice()
       .sort((a, b) => a.date.localeCompare(b.date))
       .forEach((dep) => {
-        const alreadyHandled = dep.memo
-          && (paidPool.get(dep.amount) || []).some((c) => c.client_name && dep.memo.startsWith(c.client_name.trim()));
-        if (alreadyHandled) { alreadyHandledCount++; return; }
-
+        // 1) 미납 회차 중 이름+금액이 정확히 하나만 맞는 경우 - 가장 확실한 매칭이므로 항상
+        //    최우선으로 확인한다("이미 처리됨"보다 먼저 봐야, 같은 사람의 다른 미납 회차가
+        //    엉뚱하게 "이미 낸 걸로" 조용히 묻히는 일이 없다).
         const candidates = pool.get(dep.amount) || [];
         const nameMatches = dep.memo
           ? candidates.filter((c) => c.client_name && dep.memo.startsWith(c.client_name.trim()))
@@ -1575,9 +1595,12 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
 
         if (nameMatches.length === 1) {
           const inst = nameMatches[0];
-          candidates.splice(candidates.indexOf(inst), 1);
+          removeFromPool(inst);
           matched.push({ deposit: dep, installment: inst });
-        } else if (nameMatches.length > 1) {
+          return;
+        }
+
+        if (nameMatches.length > 1) {
           // 같은 의뢰인의 같은 금액 회차가 여러 건이면(분할납부 회차별 금액이 동일한 경우 흔함),
           // 입금일과 납부예정일이 같은 달(yyyy-mm)인 회차로 좁혀본다 — 분할납부는 보통 한 달에
           // 한 회차씩 내므로 입금 월과 예정월이 거의 항상 일치한다. 정확히 한 건으로 좁혀지면
@@ -1587,7 +1610,7 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
           const sameMonth = nameMatches.filter((c) => (c.due_date || '').slice(0, 7) === depMonth);
           if (sameMonth.length === 1) {
             const inst = sameMonth[0];
-            candidates.splice(candidates.indexOf(inst), 1);
+            removeFromPool(inst);
             matched.push({ deposit: dep, installment: inst });
           } else {
             const depTime = new Date(dep.date).getTime();
@@ -1598,7 +1621,53 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
             });
             review.push({ deposit: dep, candidates: sorted, reason: '같은 이름·금액의 회차가 여러 건입니다 (입금일과 가까운 순으로 정렬됨)' });
           }
-        } else if (candidates.length > 0) {
+          return;
+        }
+
+        // 2) 정확히 같은 금액의 미납 회차가 없는 경우 - 여러 회차를 한 번에 몰아서 낸 건 아닌지
+        //    확인한다. 그 사람의 미납 회차를 예정일이 빠른 순서대로 누적 합산해서 입금액과
+        //    "정확히" 같아지는 지점이 있으면(2건 이상) 그 구간 전체를 한 번에 확정한다.
+        //    금액이 소수점 하나 없이 정확히 맞아떨어질 때만 적용해서 오매칭 위험을 없앤다.
+        if (dep.memo) {
+          let comboName = null;
+          for (const name of byName.keys()) {
+            if (name && dep.memo.startsWith(name.trim())) { comboName = name; break; }
+          }
+          if (comboName) {
+            const list = byName.get(comboName) || [];
+            let sum = 0;
+            const group = [];
+            for (const inst of list) {
+              sum += inst.amount;
+              group.push(inst);
+              if (sum >= dep.amount) break;
+            }
+            if (sum === dep.amount && group.length >= 2) {
+              group.forEach((inst) => {
+                removeFromPool(inst);
+                matched.push({ deposit: dep, installment: inst, combo: true, comboCount: group.length });
+              });
+              return;
+            }
+          }
+        }
+
+        // 3) 위 어느 것도 아니면, 이 입금이 이미 완료 처리된 회차에 대한 것일 수 있다(예전에
+        //    수동/통장매칭으로 이미 확정된 건). 같은 이름·금액의 완료 회차가 남아있으면 하나
+        //    소모하고 조용히 건너뛴다 - 매번 소모해야 같은 이름·금액의 서로 다른 입금 건이
+        //    전부 "이미 처리됨"으로 뭉뚱그려지지 않는다.
+        const paidCandidates = paidPool.get(dep.amount) || [];
+        const paidNameMatches = dep.memo
+          ? paidCandidates.filter((c) => c.client_name && dep.memo.startsWith(c.client_name.trim()))
+          : [];
+        if (paidNameMatches.length > 0) {
+          const claimed = paidNameMatches[0];
+          paidCandidates.splice(paidCandidates.indexOf(claimed), 1);
+          alreadyHandledCount++;
+          return;
+        }
+
+        if (candidates.length > 0) {
           // candidates는 pool에 남아있는 실제 배열이라, 뒤에서 다른 입금이 매칭돼 splice로
           // 제거되면 이미 review에 넣어둔 이 항목까지 같이 바뀌어버린다 - 복사본을 넣어야 한다.
           review.push({ deposit: dep, candidates: candidates.slice(), reason: '금액은 일치하지만 입금자명이 다릅니다' });
@@ -1613,7 +1682,10 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
     });
 
     res.json({
-      matched: matched.map((m) => ({ deposit: m.deposit, ...toCandidate(m.installment) })),
+      matched: matched.map((m) => ({
+        deposit: m.deposit, ...toCandidate(m.installment),
+        combo: !!m.combo, comboCount: m.comboCount || 1,
+      })),
       review: review.map((r) => ({ deposit: r.deposit, reason: r.reason, candidates: r.candidates.map(toCandidate) })),
       unmatched,
       alreadyHandledCount,

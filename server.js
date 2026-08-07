@@ -1468,14 +1468,34 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
       pool.get(inst.amount).push(inst);
     });
 
+    // 이미 완료 처리된(수동으로 직접 체크했든, 예전에 통장매칭으로 확정됐든) 회차도 이름+금액
+    // 기준으로 따로 묶어둔다 — 그 회차의 입금 건은 통장매칭 기록이 남아있지 않아도 이미 처리가
+    // 끝난 것이므로, 미매칭/확인필요 목록에 노이즈로 띄우지 않고 그냥 건너뛴다.
+    const paid = db
+      .prepare(
+        `SELECT fi.*, c.client_name FROM case_fee_installments fi
+         JOIN cases c ON c.id = fi.case_id WHERE fi.status = '완료'`
+      )
+      .all();
+    const paidPool = new Map();
+    paid.forEach((inst) => {
+      if (!paidPool.has(inst.amount)) paidPool.set(inst.amount, []);
+      paidPool.get(inst.amount).push(inst);
+    });
+
     const matched = []; // 이름+금액 유일 일치 - 미리보기에서 기본 체크됨
     const review = []; // 후보가 여러 건이거나 금액만 맞음 - 사람이 직접 골라야 함
     const unmatched = []; // 후보가 아예 없음 (수임료가 아닌 입금일 가능성)
+    let alreadyHandledCount = 0;
 
     deposits
       .slice()
       .sort((a, b) => a.date.localeCompare(b.date))
       .forEach((dep) => {
+        const alreadyHandled = dep.memo
+          && (paidPool.get(dep.amount) || []).some((c) => c.client_name && dep.memo.startsWith(c.client_name.trim()));
+        if (alreadyHandled) { alreadyHandledCount++; return; }
+
         const candidates = pool.get(dep.amount) || [];
         const nameMatches = dep.memo
           ? candidates.filter((c) => c.client_name && dep.memo.startsWith(c.client_name.trim()))
@@ -1524,6 +1544,7 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
       matched: matched.map((m) => ({ deposit: m.deposit, ...toCandidate(m.installment) })),
       review: review.map((r) => ({ deposit: r.deposit, reason: r.reason, candidates: r.candidates.map(toCandidate) })),
       unmatched,
+      alreadyHandledCount,
     });
   });
 });

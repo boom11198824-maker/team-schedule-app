@@ -369,8 +369,9 @@ function renderReviewRow(item) {
 
 function renderImportPreview(data) {
   document.getElementById('import-error').textContent = '';
+  const alreadyHandledNote = data.alreadyHandledCount ? ` · 이미 완료 처리됨 ${data.alreadyHandledCount}건(건너뜀)` : '';
   document.getElementById('import-summary').textContent =
-    `자동 매칭 ${data.matched.length}건 · 확인 필요 ${data.review.length}건 · 미매칭 ${data.unmatched.length}건`;
+    `자동 매칭 ${data.matched.length}건 · 확인 필요 ${data.review.length}건 · 미매칭 ${data.unmatched.length}건${alreadyHandledNote}`;
 
   const matchedSection = document.getElementById('import-matched-section');
   const matchedList = document.getElementById('matched-list');

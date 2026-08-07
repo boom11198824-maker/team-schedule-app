@@ -93,6 +93,10 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .stat-tile.total { background: var(--brand-navy); }
 .stat-tile.total .label { color: rgba(255,255,255,0.75); }
 .stat-tile.total .value { color: #fff; font-size: 26px; }
+.stat-tile.critical { background: var(--status-critical-bg); cursor: pointer; border: 1px solid transparent; }
+.stat-tile.critical:hover { border-color: var(--status-critical); }
+.stat-tile.critical .value { color: var(--status-critical); }
+.stat-tile.critical .hint { font-size: 11px; color: var(--text-muted); }
 
 .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--text-secondary); margin-top: 14px; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
@@ -135,6 +139,22 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .unmatched-list { font-size: 12px; color: var(--text-muted); max-height: 140px; overflow-y: auto; }
 .unmatched-list div { padding: 3px 0; border-bottom: 1px dashed var(--gridline); }
 
+/* ---- 미납자 리스트 ---- */
+.overdue-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--gridline); margin-bottom: 6px; font-size: 13px; cursor: pointer;
+}
+.overdue-row:hover { background: var(--status-critical-bg); border-color: var(--status-critical); }
+.overdue-row .days { font-size: 11px; font-weight: 700; color: var(--status-critical); background: var(--status-critical-bg); padding: 3px 7px; border-radius: 5px; white-space: nowrap; flex-shrink: 0; }
+.overdue-row .name { font-weight: 700; flex-shrink: 0; min-width: 56px; }
+.overdue-row .phone { color: var(--text-secondary); font-size: 12px; flex-shrink: 0; white-space: nowrap; }
+.overdue-row .detail { flex: 1; color: var(--text-secondary); font-size: 12px; }
+.overdue-row .amount { font-weight: 700; color: var(--status-critical); white-space: nowrap; flex-shrink: 0; }
+@media (max-width: 640px) {
+  .overdue-row { flex-wrap: wrap; }
+  .overdue-row .detail { flex-basis: 100%; order: 5; }
+}
+
 .import-summary { font-size: 13px; color: var(--text-secondary); background: var(--surface-1); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; }
 
 @media (max-width: 900px) {
@@ -175,6 +195,11 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
       </div>
       <div>
         <div class="card">
+          <div class="stat-tile critical" id="stat-overdue-tile">
+            <div class="label">🚨 미납자 (기한 초과)</div>
+            <div class="value" id="stat-overdue">-</div>
+            <div class="hint">클릭하면 명단을 볼 수 있어요</div>
+          </div>
           <p class="period-label">정산기간 (매달 25일 ~ 다음달 24일, 오늘 기준 고정)<br /><b id="period-range">-</b></p>
           <div class="stat-tile good">
             <div class="label">✅ 완료 (수납)</div>
@@ -224,6 +249,18 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
         <button id="btn-confirm-matches" class="btn-primary">선택 항목 완료 처리</button>
         <span class="spacer"></span>
         <button id="btn-close-import" class="btn-secondary">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="overdue-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>🚨 미납자 리스트 <span id="overdue-modal-count" style="font-weight:400; font-size:13px; color:var(--text-muted);"></span></h2>
+      <p class="import-summary" id="overdue-summary"></p>
+      <div id="overdue-list"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="btn-close-overdue" class="btn-secondary">닫기</button>
       </div>
     </div>
   </div>
@@ -321,6 +358,68 @@ async function loadPeriodSummary() {
     document.getElementById('period-range').textContent = '불러오기 실패';
   }
 }
+
+/* ---- 미납자 리스트: 납부예정일이 지났는데 아직 완료 처리되지 않은 회차를 의뢰인별로 묶어서
+   보여준다. 사이드바 통계 타일은 요약(건수·총액)만, 클릭하면 모달에서 전체 명단을 보여준다. ---- */
+function renderOverdueRow(c) {
+  const row = document.createElement('div');
+  row.className = 'overdue-row';
+  const detail = c.installments
+    .map((i) => `${i.seq}회차 ${won(i.amount)} (예정일 ${i.due_date.slice(0, 10)})`)
+    .join(', ');
+  row.innerHTML = `
+    <span class="days">D+${c.max_days_overdue}</span>
+    <span class="name">${escapeHtml(c.client_name)}</span>
+    <span class="phone">${escapeHtml(c.phone || '-')}</span>
+    <span class="detail">${escapeHtml(detail)}</span>
+    <span class="amount">${won(c.total_overdue)}</span>
+  `;
+  row.addEventListener('click', () => {
+    window.location.href = `/case-detail.html?id=${c.case_id}&from=fee-calendar`;
+  });
+  return row;
+}
+
+async function loadOverdueSummary() {
+  try {
+    const data = await api('/api/admin/fee-calendar/overdue');
+    document.getElementById('stat-overdue').textContent = `${data.clients.length}명 · ${won(data.totalAmount)}`;
+    return data;
+  } catch (err) {
+    document.getElementById('stat-overdue').textContent = '불러오기 실패';
+    return null;
+  }
+}
+
+async function openOverdueModal() {
+  const modal = document.getElementById('overdue-modal');
+  const listEl = document.getElementById('overdue-list');
+  const summaryEl = document.getElementById('overdue-summary');
+  modal.classList.remove('hidden');
+  listEl.innerHTML = '';
+  summaryEl.textContent = '불러오는 중...';
+  document.getElementById('overdue-modal-count').textContent = '';
+  try {
+    const data = await api('/api/admin/fee-calendar/overdue');
+    document.getElementById('overdue-modal-count').textContent = `(${data.clients.length}명)`;
+    if (!data.clients.length) {
+      summaryEl.textContent = '';
+      listEl.innerHTML = '<p class="empty-note">기한이 지난 미납 건이 없습니다. 👍</p>';
+    } else {
+      summaryEl.textContent = `총 미납액 ${won(data.totalAmount)} · 기준일 ${data.today}`;
+      data.clients.forEach((c) => listEl.appendChild(renderOverdueRow(c)));
+    }
+    document.getElementById('stat-overdue').textContent = `${data.clients.length}명 · ${won(data.totalAmount)}`;
+  } catch (err) {
+    summaryEl.textContent = '';
+    listEl.innerHTML = `<p class="error-text">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+document.getElementById('stat-overdue-tile').addEventListener('click', openOverdueModal);
+document.getElementById('btn-close-overdue').addEventListener('click', () => {
+  document.getElementById('overdue-modal').classList.add('hidden');
+});
 
 /* ---- 통장거래내역 업로드 → 자동 매칭 미리보기 ----
    업로드하면 서버가 미리보기만 계산해서 돌려주고, 실제로 완료 처리는 여기서 "선택 항목
@@ -448,6 +547,7 @@ document.getElementById('btn-confirm-matches').addEventListener('click', async (
     document.getElementById('import-modal').classList.add('hidden');
     calendar.refetchEvents();
     loadPeriodSummary();
+    loadOverdueSummary();
   } catch (err) {
     alert(err.message);
   } finally {
@@ -471,6 +571,7 @@ async function init() {
 
   setupCalendar();
   loadPeriodSummary();
+  loadOverdueSummary();
 }
 
 document.getElementById('btn-logout').addEventListener('click', async () => {

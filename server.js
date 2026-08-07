@@ -1385,6 +1385,49 @@ app.get('/api/admin/fee-calendar/period-summary', requireAdmin, (req, res) => {
   res.json({ start, end, completed, upcoming, total: completed + upcoming });
 });
 
+// "미납자 리스트": 납부예정일이 이미 지났는데도 아직 '완료' 처리되지 않은 회차를 의뢰인별로
+// 묶어서 보여준다. 정산기간과 무관하게(과거 기간 포함) 항상 "지금 기준으로 밀린 사람"을
+// 그대로 보여주는 것이 실무에서 가장 유용하므로 기간 필터는 두지 않는다.
+app.get('/api/admin/fee-calendar/overdue', requireAdmin, (req, res) => {
+  const today = new Date();
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const todayStr = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+
+  const rows = db
+    .prepare(
+      `SELECT fi.id, fi.case_id, fi.seq, fi.amount, fi.due_date, c.client_name, c.phone
+       FROM case_fee_installments fi
+       JOIN cases c ON c.id = fi.case_id
+       WHERE fi.status != '완료' AND fi.due_date IS NOT NULL AND fi.due_date != '' AND fi.due_date < ?
+       ORDER BY fi.due_date ASC`
+    )
+    .all(todayStr);
+
+  const todayUtc = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+  const byCase = new Map();
+  rows.forEach((r) => {
+    const [y, m, d] = r.due_date.slice(0, 10).split('-').map(Number);
+    const daysOverdue = Math.round((todayUtc - Date.UTC(y, m - 1, d)) / 86400000);
+    if (!byCase.has(r.case_id)) {
+      byCase.set(r.case_id, {
+        case_id: r.case_id,
+        client_name: r.client_name,
+        phone: r.phone,
+        total_overdue: 0,
+        max_days_overdue: 0,
+        installments: [],
+      });
+    }
+    const entry = byCase.get(r.case_id);
+    entry.total_overdue += r.amount;
+    entry.max_days_overdue = Math.max(entry.max_days_overdue, daysOverdue);
+    entry.installments.push({ id: r.id, seq: r.seq, amount: r.amount, due_date: r.due_date, days_overdue: daysOverdue });
+  });
+
+  const clients = Array.from(byCase.values()).sort((a, b) => b.max_days_overdue - a.max_days_overdue);
+  res.json({ today: todayStr, clients, totalAmount: clients.reduce((sum, c) => sum + c.total_overdue, 0) });
+});
+
 /* ---- 수임료 통장거래내역 매칭 (관리자 전용) ----
    은행에서 받은 거래내역 엑셀(.xls/.xlsx)을 업로드하면, 입금 건들을 미납(예정) 상태인
    납부회차와 "금액 + 입금자명"으로 자동 매칭해서 미리보기만 보여준다. 실제로 완료 처리는

@@ -1780,6 +1780,12 @@ app.get('/api/admin/fee-migration-preview', requireAdmin, async (req, res) => {
       });
     });
 
+    // 특정 의뢰인 이름을 지정하면(?debugNames=이름1,이름2) 시트에서 그 사람 행이 실제로
+    // 어떻게 파싱됐는지 그대로 보여준다 - "왜 이 사람만 회차가 하나도 안 들어갔지?" 같은
+    // 문의가 들어왔을 때, 시트 원본 데이터 자체를 다시 안 열어봐도 바로 원인을 확인하기 위함.
+    const debugNames = String(req.query.debugNames || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const debug = debugNames.length ? clients.filter((c) => debugNames.includes(c.name)) : undefined;
+
     res.json({
       totalClients: clients.length,
       rosterConnected: !!(getStoredGoogleAuth() && getStoredGoogleAuth().clients_sheet_tab),
@@ -1793,6 +1799,7 @@ app.get('/api/admin/fee-migration-preview', requireAdmin, async (req, res) => {
       upcomingCount,
       dateParseFailures,
       sample: clients.slice(0, 3),
+      debug,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

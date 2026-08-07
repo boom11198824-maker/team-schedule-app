@@ -179,7 +179,7 @@ for (const col of [
   'case_type TEXT', 'intake_date TEXT', 'assigned_lawyer TEXT', 'current_stage TEXT', 'status TEXT',
   'seal_received INTEGER NOT NULL DEFAULT 0', 'seal_received_date TEXT',
   'cert_usb_received INTEGER NOT NULL DEFAULT 0', 'cert_usb_received_date TEXT',
-  'updated_at TEXT', 'retainer_date TEXT', 'region TEXT',
+  'updated_at TEXT', 'retainer_date TEXT', 'region TEXT', 'client_rank INTEGER',
 ]) {
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
@@ -189,6 +189,20 @@ for (const col of [
 }
 // updated_at이 없는 기존 사건은 등록일로 백필 (의뢰인 목록을 "최근 변경순"으로 보여주기 위해 필요).
 db.exec("UPDATE cases SET updated_at = created_at WHERE updated_at IS NULL");
+
+// client_rank(의뢰인목록 고정 정렬키): retainer_date는 시트 표기가 제각각이라 정렬이 들쭉날쭉해
+// "뒤죽박죽"으로 보이는 문제가 있었다. client_rank는 숫자가 클수록 목록 맨 위에 뜨는 고정 순번이며,
+// 한 번 정해지면 다른 값이 바뀌어도(수정/완료처리 등) 흔들리지 않는다. 새 사건이 생성되면 이
+// 트리거가 "현재 최댓값 + 1"을 자동으로 부여하므로, 어떤 화면(상담관리/사건관리/수임료 이식 등)에서
+// 만들어지든 항상 맨 위에 새로 쌓인다 — 생성 경로를 개별적으로 다 고칠 필요가 없도록 트리거로 처리.
+db.exec(`
+CREATE TRIGGER IF NOT EXISTS trg_cases_client_rank_autofill
+AFTER INSERT ON cases
+WHEN NEW.client_rank IS NULL
+BEGIN
+  UPDATE cases SET client_rank = (SELECT COALESCE(MAX(client_rank), 0) + 1 FROM cases) WHERE id = NEW.id;
+END;
+`);
 
 // retainer_date(수임일자): 접수일(intake_date, 법원 접수 시점)과는 다른 개념 — 의뢰인과 실제
 // 수임계약을 맺은 날짜. "수임료 관리" 구글시트(FEE_MIGRATION_SPREADSHEET_ID) D열이 원본이며,
@@ -1920,6 +1934,58 @@ app.post('/api/admin/retainer-date-migration-run', requireAdmin, async (req, res
   }
 });
 
+// (일회성) 의뢰인목록 고정 순서(client_rank) 이식.
+// retainer_date 기반 정렬은 시트 표기가 제각각이라 "뒤죽박죽"으로 보이는 문제가 있어,
+// 대신 관리자가 직접 지정한 순서(names 배열, 앞에 올수록 나중 순위)를 그대로 고정 순번으로 저장한다.
+// - body.names: 옛날→최근 순으로 나열된 이름 배열. 배열 앞쪽(옛날)일수록 낮은 client_rank,
+//   뒤쪽(최근)일수록 높은 client_rank를 받는다 → 정렬은 client_rank DESC이므로 배열 순서의
+//   "역순"으로 화면에 표시된다 (요청하신 그대로).
+// - 이름이 여러 사건과 겹치면(동명이인) 아직 순번이 없는 사건 중 id가 가장 작은 것부터 배정한다.
+// - names 목록에 없는 기존 사건(예: 시트 이후 새로 계약 전환된 의뢰인)은 이미 client_rank가 있으면
+//   건드리지 않고, 없으면 목록 전체보다 높은 순번을 부여해 맨 위로 올라오게 한다 — "새로 추가되는
+//   사람은 위에 계속 쌓인다"는 요청사항을 이미 있던 미분류 의뢰인에게도 동일하게 적용.
+// - 다시 실행해도 안전하다: 이름 목록에 있는 사건은 매번 같은 값으로 재기록되고, 이미 순번이 있는
+//   사건은 두 번째 단계에서 건드리지 않는다.
+app.post('/api/admin/client-rank-run', requireAdmin, (req, res) => {
+  try {
+    const names = Array.isArray(req.body && req.body.names) ? req.body.names.map((s) => String(s).trim()).filter(Boolean) : [];
+    if (!names.length) return res.status(400).json({ error: 'names 배열이 필요합니다.' });
+
+    const assignedCaseIds = new Set();
+    const notFound = [];
+    let matched = 0;
+
+    names.forEach((name, idx) => {
+      const rank = idx + 1;
+      const candidates = db.prepare('SELECT id FROM cases WHERE client_name = ? ORDER BY id ASC').all(name)
+        .filter((c) => !assignedCaseIds.has(c.id));
+      if (!candidates.length) { notFound.push(name); return; }
+      const target = candidates[0];
+      db.prepare('UPDATE cases SET client_rank = ? WHERE id = ?').run(rank, target.id);
+      assignedCaseIds.add(target.id);
+      matched++;
+    });
+
+    // names 목록 밖에 있던 기존 사건 중 아직 순번이 없는 것들은, 예전 정렬 기준(retainer_date/updated_at)
+    // 순서를 그대로 유지한 채 목록 전체보다 높은 순번을 매겨 맨 위로 올린다.
+    // leftover[0]가 예전 기준으로 "가장 최근"이므로, client_rank DESC 정렬에서 맨 위에 오도록
+    // 가장 큰 순번을 줘야 한다 — 즉 배열을 뒤에서부터(가장 오래된 것부터) 순번을 채워 나간다.
+    const leftover = db.prepare(`
+      SELECT id FROM cases WHERE client_rank IS NULL
+      ORDER BY (retainer_date IS NULL OR retainer_date = '') DESC, retainer_date DESC, updated_at DESC, id DESC
+    `).all();
+    const backfilled = leftover.length;
+    for (let i = leftover.length - 1; i >= 0; i--) {
+      const rank = names.length + (leftover.length - i);
+      db.prepare('UPDATE cases SET client_rank = ? WHERE id = ?').run(rank, leftover[i].id);
+    }
+
+    res.json({ totalNames: names.length, matched, notFoundCount: notFound.length, notFound, backfilled });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 사건유형(개인회생/개인파산) 추정: 진홍 님 말씀대로 파산은 보통 5회차까지, 회생은 보통 4회차까지
 // 납부받는다는 실무 규칙을 이용해, 시트의 회차 개수로 사건유형을 추측한다.
 // "보통"이라는 표현대로 100% 확실한 규칙은 아니라서, 이미 사건유형이 채워진 사건은 절대 건드리지 않고
@@ -2038,15 +2104,16 @@ const CONTRACTED_CASE_STATUSES = ['사건진행중', '개시결정후'];
 // (2026-08: 의뢰인 명단 외부 구글시트는 더 이상 갱신되지 않아 완전히 폐기하고, 앱 SQLite의 cases
 //  테이블 하나만을 단일 원본으로 사용한다 - "하나의 플랫폼 / SQLite 단일 데이터베이스" 원칙.
 //  상담관리에서 상태를 "사건진행중"/"개시결정후"로 바꾸는 순간 여기 자동으로 나타난다.
-//  정렬은 "수임일자(retainer_date) 역순" - 실제 계약 순서를 반영한다. retainer_date가 없는
-//  의뢰인(= 수임료 시트 이식 이후 상담관리에서 새로 계약 전환된 신규 의뢰인)은 항상 맨 위로
-//  올라온다 - "무조건 맨처음 뜨도록" 요청사항. 그 안에서는 updated_at(최근 변경순)으로 정렬.)
+//  정렬은 client_rank(숫자가 클수록 위) 역순 고정 - retainer_date는 시트 표기가 제각각이라
+//  순서가 들쭉날쭉해지는 문제가 있어 더 이상 정렬 기준으로 쓰지 않는다. client_rank가 아직 없는
+//  극히 예외적인 행만 이전 방식(retainer_date/updated_at)으로 보조 정렬한다.)
 app.get('/api/clients', requireLogin, (req, res) => {
   try {
     const placeholders = CONTRACTED_CASE_STATUSES.map(() => '?').join(', ');
     const cases = db.prepare(`
       SELECT * FROM cases WHERE status IN (${placeholders})
-      ORDER BY (retainer_date IS NULL OR retainer_date = '') DESC, retainer_date DESC, updated_at DESC, id DESC
+      ORDER BY (client_rank IS NULL) ASC, client_rank DESC,
+               (retainer_date IS NULL OR retainer_date = '') DESC, retainer_date DESC, updated_at DESC, id DESC
     `).all(...CONTRACTED_CASE_STATUSES);
     const clients = cases.map((c) => attachClientDocs({
       id: `case-${c.id}`,

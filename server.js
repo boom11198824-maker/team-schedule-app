@@ -1486,7 +1486,26 @@ app.post('/api/admin/fee-calendar/import-preview', requireAdmin, (req, res) => {
           candidates.splice(candidates.indexOf(inst), 1);
           matched.push({ deposit: dep, installment: inst });
         } else if (nameMatches.length > 1) {
-          review.push({ deposit: dep, candidates: nameMatches, reason: '같은 이름·금액의 회차가 여러 건입니다' });
+          // 같은 의뢰인의 같은 금액 회차가 여러 건이면(분할납부 회차별 금액이 동일한 경우 흔함),
+          // 입금일과 납부예정일이 같은 달(yyyy-mm)인 회차로 좁혀본다 — 분할납부는 보통 한 달에
+          // 한 회차씩 내므로 입금 월과 예정월이 거의 항상 일치한다. 정확히 한 건으로 좁혀지면
+          // 자동 확정하고, 그렇지 않으면 사람이 고르되 입금일과 가까운 예정일 순으로 정렬해서
+          // 후보 목록 맨 위에 가장 유력한 회차가 오도록 한다.
+          const depMonth = dep.date.slice(0, 7);
+          const sameMonth = nameMatches.filter((c) => (c.due_date || '').slice(0, 7) === depMonth);
+          if (sameMonth.length === 1) {
+            const inst = sameMonth[0];
+            candidates.splice(candidates.indexOf(inst), 1);
+            matched.push({ deposit: dep, installment: inst });
+          } else {
+            const depTime = new Date(dep.date).getTime();
+            const sorted = nameMatches.slice().sort((a, b) => {
+              const da = a.due_date ? Math.abs(new Date(a.due_date).getTime() - depTime) : Infinity;
+              const db = b.due_date ? Math.abs(new Date(b.due_date).getTime() - depTime) : Infinity;
+              return da - db;
+            });
+            review.push({ deposit: dep, candidates: sorted, reason: '같은 이름·금액의 회차가 여러 건입니다 (입금일과 가까운 순으로 정렬됨)' });
+          }
         } else if (candidates.length > 0) {
           // candidates는 pool에 남아있는 실제 배열이라, 뒤에서 다른 입금이 매칭돼 splice로
           // 제거되면 이미 review에 넣어둔 이 항목까지 같이 바뀌어버린다 - 복사본을 넣어야 한다.

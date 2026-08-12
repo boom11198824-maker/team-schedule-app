@@ -124,6 +124,20 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .hidden { display: none !important; }
 .error-text { color: #b23a3a; font-size: 13px; margin: 6px 0 0; min-height: 0; }
 
+#client-search-input {
+  width: 100%; font-family: inherit; font-size: 14px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card-surface); color: var(--text-primary); box-sizing: border-box;
+}
+.client-search-results { max-height: 320px; overflow-y: auto; margin-top: 10px; }
+.client-search-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px;
+  border-radius: 8px; border: 1px solid var(--gridline); margin-bottom: 6px; cursor: pointer; font-size: 13px;
+}
+.client-search-row:hover { background: var(--surface-1); border-color: var(--brand-coral); }
+.client-search-row .name { font-weight: 700; }
+.client-search-row .phone { color: var(--text-secondary); font-size: 12px; }
+.client-search-empty { color: var(--text-muted); font-size: 13px; padding: 12px 0; text-align: center; }
+
 .match-row {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px;
   border: 1px solid var(--gridline); margin-bottom: 6px; font-size: 13px;
@@ -250,6 +264,19 @@ button.btn-ignore-deposit:disabled { cursor: not-allowed; opacity: 0.6; }
         <button id="btn-confirm-matches" class="btn-primary">선택 항목 완료 처리</button>
         <span class="spacer"></span>
         <button id="btn-close-import" class="btn-secondary">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="client-search-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>👤 의뢰인 선택</h2>
+      <p class="import-summary" id="client-search-target-info"></p>
+      <input type="text" id="client-search-input" placeholder="이름 또는 연락처로 검색" autocomplete="off" />
+      <div id="client-search-results" class="client-search-results"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="btn-close-client-search" class="btn-secondary">취소</button>
       </div>
     </div>
   </div>
@@ -438,6 +465,64 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// 통장매칭 화면에서 자동/확인필요 후보에 없는 의뢰인을 직접 검색해서 고를 때 쓰는 팝업.
+// /api/clients는 의뢰인 수가 많지 않아(수백 명 이내) 한 번만 불러와 캐싱해두고 이름·연락처로
+// 그때그때 필터링한다. 선택하면 Promise가 그 의뢰인으로 resolve되고, 취소하면 null로 resolve된다.
+let __clientSearchCache = null;
+async function loadClientSearchCache() {
+  if (!__clientSearchCache) {
+    const res = await fetch('/api/clients', { credentials: 'include' });
+    __clientSearchCache = await res.json();
+  }
+  return __clientSearchCache;
+}
+
+function openClientSearchModal(infoText) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('client-search-modal');
+    const input = document.getElementById('client-search-input');
+    const results = document.getElementById('client-search-results');
+    const closeBtn = document.getElementById('btn-close-client-search');
+    document.getElementById('client-search-target-info').textContent = infoText || '';
+    input.value = '';
+    results.innerHTML = '';
+    modal.classList.remove('hidden');
+
+    function renderResults(query) {
+      const q = query.trim();
+      const list = (__clientSearchCache || [])
+        .filter((c) => !q || (c.client_name && c.client_name.includes(q)) || (c.phone && c.phone.includes(q)))
+        .slice(0, 50);
+      results.innerHTML = '';
+      if (!list.length) {
+        results.innerHTML = '<div class="client-search-empty">검색 결과가 없습니다</div>';
+        return;
+      }
+      list.forEach((c) => {
+        const row = document.createElement('div');
+        row.className = 'client-search-row';
+        row.innerHTML = `<span class="name">${escapeHtml(c.client_name)}</span><span class="phone">${escapeHtml(c.phone || '')}</span>`;
+        row.addEventListener('click', () => { cleanup(); resolve(c); });
+        results.appendChild(row);
+      });
+    }
+
+    function onInput() { renderResults(input.value); }
+    function onClose() { cleanup(); resolve(null); }
+    function cleanup() {
+      modal.classList.add('hidden');
+      input.removeEventListener('input', onInput);
+      closeBtn.removeEventListener('click', onClose);
+    }
+
+    input.addEventListener('input', onInput);
+    closeBtn.addEventListener('click', onClose);
+    loadClientSearchCache().then(() => renderResults('')).catch((err) => {
+      results.innerHTML = `<div class="client-search-empty">의뢰인 목록을 불러오지 못했습니다: ${escapeHtml(err.message)}</div>`;
+    });
+  });
+}
+
 function renderMatchRow({ deposit, installment_id, client_name, seq, amount, due_date, combo, comboCount }) {
   const row = document.createElement('div');
   row.className = 'match-row matched';
@@ -462,7 +547,7 @@ function renderMatchRow({ deposit, installment_id, client_name, seq, amount, due
 function renderReviewRow(item) {
   const row = document.createElement('div');
   row.className = 'match-row';
-  const options = ['<option value="">선택 안 함</option>'].concat(
+  const options = ['<option value="">선택 안 함</option>', '<option value="__manual__">🔍 의뢰인 선택...</option>'].concat(
     (item.candidates || []).map((c) => `<option value="${c.installment_id}">${escapeHtml(c.client_name)} ${c.seq}회차 (${won(c.amount)}, 예정일 ${c.due_date || '-'})</option>`)
   );
   const reasonHtml = item.reason
@@ -478,7 +563,57 @@ function renderReviewRow(item) {
   const checkbox = row.querySelector('.match-checkbox');
   const select = row.querySelector('.review-select');
   const ignoreBtn = row.querySelector('.btn-ignore-deposit');
-  select.addEventListener('change', () => {
+
+  // 자동 후보 중에 고르는 대신, 의뢰인을 직접 검색해서 그 사건에 새 납부 회차를 바로
+  // "완료" 상태로 만든다 — 아직 회차를 등록해두지 않은 사건에도 입금을 기록할 수 있다.
+  function showManualRegistered(installment, clientName) {
+    row.innerHTML = '';
+    row.classList.add('ignored');
+    const doneSpan = document.createElement('span');
+    doneSpan.className = 'dep-info dep-done';
+    doneSpan.style.flex = '1';
+    doneSpan.textContent = `✅ ${item.deposit.date} · ${won(item.deposit.amount)} · ${item.deposit.memo || '(입금자명 없음)'} — ${clientName} ${installment.seq}회차로 수동 등록됨`;
+    const undoBtn = document.createElement('button');
+    undoBtn.type = 'button';
+    undoBtn.className = 'btn-undo-ignore';
+    undoBtn.textContent = '취소';
+    undoBtn.addEventListener('click', async () => {
+      undoBtn.disabled = true;
+      try {
+        const res = await fetch(`/api/fee-installments/${installment.id}`, { method: 'DELETE' });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || '취소에 실패했습니다.'); }
+        row.replaceWith(renderReviewRow(item));
+      } catch (err) {
+        alert(err.message);
+        undoBtn.disabled = false;
+      }
+    });
+    row.appendChild(doneSpan);
+    row.appendChild(undoBtn);
+  }
+
+  select.addEventListener('change', async () => {
+    if (select.value === '__manual__') {
+      select.value = '';
+      const infoText = `${item.deposit.date} · ${won(item.deposit.amount)} · "${item.deposit.memo || '(입금자명 없음)'}" 입금을 등록할 의뢰인을 선택하세요`;
+      const chosen = await openClientSearchModal(infoText);
+      if (!chosen) return;
+      select.disabled = true;
+      try {
+        const res = await fetch('/api/admin/fee-calendar/manual-deposit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ case_id: chosen.case_id, date: item.deposit.date, amount: item.deposit.amount, memo: item.deposit.memo || '' }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || '등록에 실패했습니다.');
+        showManualRegistered(data.installment, data.client_name);
+      } catch (err) {
+        alert(err.message);
+        select.disabled = false;
+      }
+      return;
+    }
     checkbox.checked = !!select.value;
     checkbox.disabled = !select.value;
     checkbox.dataset.installmentId = select.value;

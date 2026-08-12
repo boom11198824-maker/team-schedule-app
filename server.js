@@ -1694,25 +1694,47 @@ app.post('/api/admin/fee-calendar/import-preview', requireTab('fee'), (req, res)
 
         if (nameMatches.length > 1) {
           // 같은 의뢰인의 같은 금액 회차가 여러 건이면(분할납부 회차별 금액이 동일한 경우 흔함),
-          // 입금일과 납부예정일이 같은 달(yyyy-mm)인 회차로 좁혀본다 — 분할납부는 보통 한 달에
-          // 한 회차씩 내므로 입금 월과 예정월이 거의 항상 일치한다. 정확히 한 건으로 좁혀지면
-          // 자동 확정하고, 그렇지 않으면 사람이 고르되 입금일과 가까운 예정일 순으로 정렬해서
-          // 후보 목록 맨 위에 가장 유력한 회차가 오도록 한다.
-          const depMonth = dep.date.slice(0, 7);
-          const sameMonth = nameMatches.filter((c) => (c.due_date || '').slice(0, 7) === depMonth);
-          if (sameMonth.length === 1) {
-            const inst = sameMonth[0];
+          // 예정일이 이미 지난(연체) 회차가 있는지부터 본다 — 실무상 밀린 회차를 뒤늦게 낼 때가
+          // 많은데, 그 경우 입금월이 밀린 회차의 예정월과는 다르고 오히려 "다음" 회차의 예정월과
+          // 우연히 같아지는 경우가 있다(예: 7/26 예정 2회차를 8/10에 냈는데 3회차 예정일이
+          // 8/26이라 입금월=예정월이 3회차 쪽만 맞는 경우). 이때 예정월이 같다는 이유만으로
+          // 아직 예정일이 안 된 다음 회차를 매칭해버리면 정작 연체된 회차는 계속 미납으로 남는다.
+          // → 연체 회차(예정일 ≤ 입금일)가 정확히 하나면 그걸 최우선으로 확정한다.
+          const overdue = nameMatches
+            .filter((c) => c.due_date && c.due_date <= dep.date)
+            .sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
+
+          if (overdue.length === 1) {
+            const inst = overdue[0];
             removeFromPool(inst);
             matched.push({ deposit: dep, installment: inst });
-          } else {
-            const depTime = new Date(dep.date).getTime();
-            const sorted = nameMatches.slice().sort((a, b) => {
-              const da = a.due_date ? Math.abs(new Date(a.due_date).getTime() - depTime) : Infinity;
-              const db = b.due_date ? Math.abs(new Date(b.due_date).getTime() - depTime) : Infinity;
-              return da - db;
-            });
-            review.push({ deposit: dep, candidates: sorted, reason: '같은 이름·금액의 회차가 여러 건입니다 (입금일과 가까운 순으로 정렬됨)' });
+            return;
           }
+
+          if (overdue.length === 0) {
+            // 연체 회차가 하나도 없으면(전부 예정일이 아직 안 지남) 입금일과 예정일이 같은
+            // 달(yyyy-mm)인 회차로 좁혀본다 — 분할납부는 보통 한 달에 한 회차씩 내므로 입금 월과
+            // 예정월이 거의 항상 일치한다.
+            const depMonth = dep.date.slice(0, 7);
+            const sameMonth = nameMatches.filter((c) => (c.due_date || '').slice(0, 7) === depMonth);
+            if (sameMonth.length === 1) {
+              const inst = sameMonth[0];
+              removeFromPool(inst);
+              matched.push({ deposit: dep, installment: inst });
+              return;
+            }
+          }
+
+          // 그래도 하나로 안 좁혀지면(연체 회차가 2건 이상이거나, 연체는 없는데 같은 달 후보도
+          // 여러 건) 사람이 고르되, 과거 예정일(연체) 순으로 정렬해서 후보 목록 맨 위에 가장
+          // 유력한(가장 오래 밀린) 회차가 오도록 한다.
+          const sorted = nameMatches.slice().sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
+          review.push({
+            deposit: dep, candidates: sorted,
+            reason: overdue.length > 1
+              ? '연체된 회차가 여러 건입니다 (예정일이 빠른 순으로 정렬됨)'
+              : '같은 이름·금액의 회차가 여러 건입니다 (예정일이 빠른 순으로 정렬됨)',
+          });
           return;
         }
 

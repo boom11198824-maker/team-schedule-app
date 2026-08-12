@@ -1871,6 +1871,30 @@ app.delete('/api/admin/fee-calendar/ignore-deposit/:id', requireTab('fee'), (req
   res.json({ deleted: true });
 });
 
+// 자동/확인필요 후보 목록에 원하는 회차가 없을 때, 사람이 의뢰인을 직접 검색해서 골라 그
+// 사건에 새 납부 회차를 바로 "완료" 상태로 만든다. 회차를 미리 등록해두지 않은 사건에도
+// 입금을 기록할 수 있다 — seq는 그 사건의 기존 회차 중 가장 큰 번호 다음으로 자동 부여한다.
+app.post('/api/admin/fee-calendar/manual-deposit', requireTab('fee'), (req, res) => {
+  const caseRow = db.prepare('SELECT id, client_name FROM cases WHERE id = ?').get(req.body.case_id);
+  if (!caseRow) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  const date = String(req.body.date || '').slice(0, 10);
+  const amount = Number(req.body.amount) || 0;
+  const memo = String(req.body.memo || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || amount <= 0) {
+    return res.status(400).json({ error: '입금 날짜와 금액이 올바르지 않습니다.' });
+  }
+
+  const maxSeq = db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM case_fee_installments WHERE case_id = ?').get(caseRow.id).m;
+  const info = db.prepare(`
+    INSERT INTO case_fee_installments (case_id, seq, amount, due_date, status, paid_date, memo, payment_method, payer_name, match_source)
+    VALUES (?, ?, ?, ?, '완료', ?, ?, '계좌이체', ?, '수동')
+  `).run(caseRow.id, maxSeq + 1, amount, date, date, '통장매칭 수동 등록', memo);
+
+  const installment = db.prepare('SELECT * FROM case_fee_installments WHERE id = ?').get(info.lastInsertRowid);
+  res.json({ installment, client_name: caseRow.client_name });
+});
+
 app.post('/api/admin/fee-calendar/confirm-matches', requireTab('fee'), (req, res) => {
   const { matches } = req.body || {};
   if (!Array.isArray(matches) || matches.length === 0) {

@@ -1568,6 +1568,16 @@ function parseBankStatement(buffer) {
   return deposits;
 }
 
+// 입금 메모(보낸사람 이름)가 이 회차와 관련 있는지 확인한다. 원칙적으로 의뢰인 본인 이름과
+// 비교하지만, 가족이 대신 납부하는 경우가 있어(예: 자녀가 부모 몫을 대신 입금) 회차에 미리
+// "입금자명(payer_name)"을 등록해두면 그 이름으로도 매칭할 수 있게 한다.
+function memoMatchesInst(dep, inst) {
+  if (!dep.memo) return false;
+  if (inst.client_name && dep.memo.startsWith(inst.client_name.trim())) return true;
+  if (inst.payer_name && dep.memo.startsWith(inst.payer_name.trim())) return true;
+  return false;
+}
+
 app.post('/api/admin/fee-calendar/import-preview', requireTab('fee'), (req, res) => {
   bankStatementUpload.single('file')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
@@ -1657,14 +1667,13 @@ app.post('/api/admin/fee-calendar/import-preview', requireTab('fee'), (req, res)
         //    그 회차를 위한 입금이 확실하므로 더 볼 것 없이 "이미 처리됨"으로 건너뛴다.
         if (dep.memo) {
           let exactName = null;
-          for (const name of new Set([...pool.values()].flat().map((c) => c.client_name))) {
-            if (name && dep.memo.startsWith(name.trim())) { exactName = name; break; }
-          }
+          const poolFlat = [...pool.values()].flat();
+          const exactFromPool = poolFlat.find((c) => memoMatchesInst(dep, c));
+          if (exactFromPool) exactName = exactFromPool.client_name;
           // pool에 이름이 없을 수도 있으니(완료 회차만 있는 사람) paidPool 쪽 이름도 함께 확인
           if (!exactName) {
-            for (const inst of paid) {
-              if (inst.client_name && dep.memo.startsWith(inst.client_name.trim())) { exactName = inst.client_name; break; }
-            }
+            const exactFromPaid = paid.find((inst) => memoMatchesInst(dep, inst));
+            if (exactFromPaid) exactName = exactFromPaid.client_name;
           }
           if (exactName) {
             const exactKey = `${exactName}|${dep.amount}|${dep.date}`;
@@ -1682,7 +1691,7 @@ app.post('/api/admin/fee-calendar/import-preview', requireTab('fee'), (req, res)
         //    엉뚱하게 "이미 낸 걸로" 조용히 묻히는 일이 없다).
         const candidates = pool.get(dep.amount) || [];
         const nameMatches = dep.memo
-          ? candidates.filter((c) => c.client_name && dep.memo.startsWith(c.client_name.trim()))
+          ? candidates.filter((c) => memoMatchesInst(dep, c))
           : [];
 
         if (nameMatches.length === 1) {
@@ -1744,8 +1753,9 @@ app.post('/api/admin/fee-calendar/import-preview', requireTab('fee'), (req, res)
         //    금액이 소수점 하나 없이 정확히 맞아떨어질 때만 적용해서 오매칭 위험을 없앤다.
         if (dep.memo) {
           let comboName = null;
-          for (const name of byName.keys()) {
+          for (const [name, list] of byName.entries()) {
             if (name && dep.memo.startsWith(name.trim())) { comboName = name; break; }
+            if (list.some((inst) => inst.payer_name && dep.memo.startsWith(inst.payer_name.trim()))) { comboName = name; break; }
           }
           if (comboName) {
             const list = byName.get(comboName) || [];
@@ -1772,7 +1782,7 @@ app.post('/api/admin/fee-calendar/import-preview', requireTab('fee'), (req, res)
         //    전부 "이미 처리됨"으로 뭉뚱그려지지 않는다.
         const paidCandidates = paidPool.get(dep.amount) || [];
         const paidNameMatches = dep.memo
-          ? paidCandidates.filter((c) => c.client_name && dep.memo.startsWith(c.client_name.trim()))
+          ? paidCandidates.filter((c) => memoMatchesInst(dep, c))
           : [];
         if (paidNameMatches.length > 0) {
           const claimed = paidNameMatches[0];

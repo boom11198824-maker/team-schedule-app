@@ -344,6 +344,23 @@ db.exec(`
   WHERE status = '완료' AND (match_source IS NULL OR match_source = '')
 `);
 
+// 통장 거래내역 중에는 애초에 "사건(case)"이 없는 사람의 입금(예: 상담만 받고 의뢰하지 않은
+// 사람의 상담료)이 섞여 있다 — 이런 건 붙여둘 회차 자체가 없어서 항상 미매칭으로 뜨고, 통장
+// 내역을 다시 업로드할 때마다(기간이 겹치면) 같은 건이 계속 노이즈로 반복 노출된다. 그렇다고
+// 그 거래내역 자체를 지우는 건 원칙 11(데이터는 절대 잃지 않는다)에 어긋나므로, "이 입금은
+// 사건과 무관하다고 이미 확인했다"는 표시만 별도 테이블에 남겨서 다음 재분석부터 걸러낸다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS fee_calendar_ignored_deposits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deposit_date TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  memo TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '상담료 등 (사건과 무관)',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_fee_ignored_deposits_key ON fee_calendar_ignored_deposits(deposit_date, amount, memo);
+`);
+
 // 앱 전역 기본값 설정(담당직원/담당변호사 기본값 등) — 단일 행(id=1)만 사용
 db.exec(`
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -1654,15 +1671,27 @@ app.post('/api/admin/fee-calendar/import-preview', requireTab('fee'), (req, res)
       exactPaidDateMap.set(key, (exactPaidDateMap.get(key) || 0) + 1);
     });
 
+    // 이전에 "사건과 무관함(상담료 등)"으로 표시해둔 입금 목록 (날짜+금액+메모가 완전히
+    // 같아야 같은 거래로 본다 — 통장내역 재분석 시 이 목록에 있으면 매번 조용히 건너뛴다.
+    const ignoredKeys = new Set(
+      db.prepare('SELECT deposit_date, amount, memo FROM fee_calendar_ignored_deposits').all()
+        .map((d) => `${d.deposit_date}|${d.amount}|${d.memo}`)
+    );
+
     const matched = []; // 이름+금액 유일 일치(또는 합산 일치) - 미리보기에서 기본 체크됨
     const review = []; // 후보가 여러 건이거나 금액만 맞음 - 사람이 직접 골라야 함
     const unmatched = []; // 후보가 아예 없음 (수임료가 아닌 입금일 가능성)
     let alreadyHandledCount = 0;
+    let ignoredCount = 0;
 
     deposits
       .slice()
       .sort((a, b) => a.date.localeCompare(b.date))
       .forEach((dep) => {
+        // -1) 사건과 무관하다고 이미 표시해둔 입금이면(예: 상담료), 더 볼 것 없이 건너뛴다.
+        const ignoreKey = `${dep.date}|${dep.amount}|${dep.memo || ''}`;
+        if (ignoredKeys.has(ignoreKey)) { ignoredCount++; return; }
+
         // 0) 이 입금(이름+금액+날짜)이 이미 완료 처리된 어떤 회차의 paid_date와 정확히 똑같으면,
         //    그 회차를 위한 입금이 확실하므로 더 볼 것 없이 "이미 처리됨"으로 건너뛴다.
         if (dep.memo) {
@@ -1813,8 +1842,33 @@ app.post('/api/admin/fee-calendar/import-preview', requireTab('fee'), (req, res)
       review: review.map((r) => ({ deposit: r.deposit, reason: r.reason, candidates: r.candidates.map(toCandidate) })),
       unmatched,
       alreadyHandledCount,
+      ignoredCount,
     });
   });
+});
+
+// 특정 입금 건을 "사건과 무관함(상담료 등)"으로 표시한다. 사건에 붙일 회차가 없는 입금(상담만
+// 받고 의뢰하지 않은 사람의 상담료 등)을 통장내역 재분석 때마다 미매칭 목록에 다시 띄우지
+// 않기 위한 용도 — 거래내역 자체를 지우지 않고 "이미 확인했다"는 표시만 남긴다(원칙 11).
+app.post('/api/admin/fee-calendar/ignore-deposit', requireTab('fee'), (req, res) => {
+  const date = String(req.body.date || '').slice(0, 10);
+  const amount = Number(req.body.amount) || 0;
+  const memo = String(req.body.memo || '').trim();
+  const reason = String(req.body.reason || '').trim() || '상담료 등 (사건과 무관)';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || amount <= 0) {
+    return res.status(400).json({ error: '입금 날짜와 금액이 올바르지 않습니다.' });
+  }
+  const info = db.prepare(
+    `INSERT INTO fee_calendar_ignored_deposits (deposit_date, amount, memo, reason) VALUES (?, ?, ?, ?)`
+  ).run(date, amount, memo, reason);
+  res.json({ id: info.lastInsertRowid, deposit_date: date, amount, memo, reason });
+});
+
+// 위 표시를 취소한다 (실수로 눌렀을 때 되돌리기 용도).
+app.delete('/api/admin/fee-calendar/ignore-deposit/:id', requireTab('fee'), (req, res) => {
+  const info = db.prepare('DELETE FROM fee_calendar_ignored_deposits WHERE id = ?').run(req.params.id);
+  if (info.changes === 0) return res.status(404).json({ error: '이미 삭제된 항목입니다.' });
+  res.json({ deleted: true });
 });
 
 app.post('/api/admin/fee-calendar/confirm-matches', requireTab('fee'), (req, res) => {

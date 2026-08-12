@@ -135,11 +135,9 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .match-row .target select { width: 100%; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; font-family: inherit; }
 .match-row .reason { font-size: 11px; color: var(--status-warning); }
 .match-row.matched { background: var(--status-good-bg); border-color: var(--status-good); }
+.match-row.ignored { background: var(--status-good-bg); border-color: var(--status-good); }
+.match-row .dep-done { color: var(--status-good); white-space: normal; }
 
-.unmatched-list { font-size: 12px; color: var(--text-muted); max-height: 180px; overflow-y: auto; }
-.unmatched-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; border-bottom: 1px dashed var(--gridline); }
-.unmatched-row .dep-text { flex: 1; }
-.unmatched-row .dep-done { color: var(--status-good); }
 button.btn-ignore-deposit, button.btn-undo-ignore {
   background: #eef1f6; color: var(--text-secondary); border: 1px solid var(--gridline); padding: 3px 8px;
   border-radius: 6px; font-size: 11px; cursor: pointer; white-space: nowrap; flex-shrink: 0;
@@ -244,13 +242,8 @@ button.btn-ignore-deposit:disabled { cursor: not-allowed; opacity: 0.6; }
       </div>
 
       <div id="import-review-section" class="hidden">
-        <h3>🔎 확인 필요 <span id="review-count">0</span>건 <span style="font-weight:400; color:var(--text-muted); font-size:12px;">(직접 골라서 선택해주세요)</span></h3>
+        <h3>🔎 확인 필요 <span id="review-count">0</span>건 <span style="font-weight:400; color:var(--text-muted); font-size:12px;">(회차를 직접 골라 선택하거나, 사건과 무관한 입금이면 표시해주세요)</span></h3>
         <div id="review-list"></div>
-      </div>
-
-      <div id="import-unmatched-section" class="hidden">
-        <h3>➖ 미매칭 입금 <span id="unmatched-count">0</span>건 <span style="font-weight:400; color:var(--text-muted); font-size:12px;">(참고용 — 수임료가 아닐 수 있습니다)</span></h3>
-        <div id="unmatched-list" class="unmatched-list"></div>
       </div>
 
       <div class="modal-actions">
@@ -460,20 +453,31 @@ function renderMatchRow({ deposit, installment_id, client_name, seq, amount, due
   return row;
 }
 
+// "확인 필요" 한 목록으로 통합해서 보여준다 (예전엔 후보가 있는 건/없는 건을 "확인 필요"·
+// "미매칭"으로 나눠서 보여줬는데, 실제로는 후보가 있어도 전부 엉뚱한 사람이라 결국 무관한
+// 입금인 경우가 많아서 — 예: 홍미정의 상담료가 우연히 문선환의 회차와 금액이 같아 "확인
+// 필요"로 분류됐지만 실제로는 관계가 없는 경우 — 두 목록을 나누는 게 오히려 헷갈렸다.
+// 이제는 후보가 있으면 select로 고르고, 없으면 "선택 안 함"만 남는 형태로 한 목록에서
+// 처리하며, 어느 쪽이든 "사건과 무관함(상담료 등)"으로 바로 표시할 수 있다.
 function renderReviewRow(item) {
   const row = document.createElement('div');
   row.className = 'match-row';
   const options = ['<option value="">선택 안 함</option>'].concat(
-    item.candidates.map((c) => `<option value="${c.installment_id}">${escapeHtml(c.client_name)} ${c.seq}회차 (${won(c.amount)}, 예정일 ${c.due_date || '-'})</option>`)
+    (item.candidates || []).map((c) => `<option value="${c.installment_id}">${escapeHtml(c.client_name)} ${c.seq}회차 (${won(c.amount)}, 예정일 ${c.due_date || '-'})</option>`)
   );
+  const reasonHtml = item.reason
+    ? `<br /><span class="reason">⚠️ ${escapeHtml(item.reason)}</span>`
+    : `<br /><span class="reason">⚠️ 일치하는 회차 후보가 없습니다</span>`;
   row.innerHTML = `
     <input type="checkbox" class="match-checkbox" disabled />
-    <span class="dep-info">${item.deposit.date} · ${won(item.deposit.amount)}<br />"${escapeHtml(item.deposit.memo || '(입금자명 없음)')}"<br /><span class="reason">⚠️ ${escapeHtml(item.reason)}</span></span>
+    <span class="dep-info">${item.deposit.date} · ${won(item.deposit.amount)}<br />"${escapeHtml(item.deposit.memo || '(입금자명 없음)')}"${reasonHtml}</span>
     <span class="arrow">→</span>
     <span class="target"><select class="review-select">${options.join('')}</select></span>
+    <button type="button" class="btn-ignore-deposit">상담료 등 (사건 무관)</button>
   `;
   const checkbox = row.querySelector('.match-checkbox');
   const select = row.querySelector('.review-select');
+  const ignoreBtn = row.querySelector('.btn-ignore-deposit');
   select.addEventListener('change', () => {
     checkbox.checked = !!select.value;
     checkbox.disabled = !select.value;
@@ -481,61 +485,14 @@ function renderReviewRow(item) {
     checkbox.dataset.paidDate = item.deposit.date;
     checkbox.dataset.memo = item.deposit.memo || '';
   });
-  return row;
-}
-
-function renderImportPreview(data) {
-  document.getElementById('import-error').textContent = '';
-  const alreadyHandledNote = data.alreadyHandledCount ? ` · 이미 완료 처리됨 ${data.alreadyHandledCount}건(건너뜀)` : '';
-  const ignoredNote = data.ignoredCount ? ` · 사건 무관 처리됨 ${data.ignoredCount}건(건너뜀)` : '';
-  const comboCount = data.matched.filter((m) => m.combo).length;
-  const comboNote = comboCount ? ` (그중 묶음매칭 ${comboCount}건 🧩)` : '';
-  document.getElementById('import-summary').textContent =
-    `자동 매칭 ${data.matched.length}건${comboNote} · 확인 필요 ${data.review.length}건 · 미매칭 ${data.unmatched.length}건${alreadyHandledNote}${ignoredNote}`;
-
-  const matchedSection = document.getElementById('import-matched-section');
-  const matchedList = document.getElementById('matched-list');
-  matchedList.innerHTML = '';
-  document.getElementById('matched-count').textContent = data.matched.length;
-  matchedSection.classList.toggle('hidden', data.matched.length === 0);
-  data.matched.forEach((m) => matchedList.appendChild(renderMatchRow(m)));
-
-  const reviewSection = document.getElementById('import-review-section');
-  const reviewList = document.getElementById('review-list');
-  reviewList.innerHTML = '';
-  document.getElementById('review-count').textContent = data.review.length;
-  reviewSection.classList.toggle('hidden', data.review.length === 0);
-  data.review.forEach((r) => reviewList.appendChild(renderReviewRow(r)));
-
-  const unmatchedSection = document.getElementById('import-unmatched-section');
-  const unmatchedList = document.getElementById('unmatched-list');
-  unmatchedList.innerHTML = '';
-  document.getElementById('unmatched-count').textContent = data.unmatched.length;
-  unmatchedSection.classList.toggle('hidden', data.unmatched.length === 0);
-  data.unmatched.forEach((dep) => unmatchedList.appendChild(renderUnmatchedRow(dep)));
-}
-
-// 사건에 연결할 회차가 없는 입금(예: 상담만 받고 의뢰하지 않은 사람의 상담료)을 "사건과
-// 무관함"으로 표시해두면, 다음에 통장내역을 다시 업로드해도 이 건은 자동으로 걸러져서
-// 미매칭 목록에 노이즈로 다시 뜨지 않는다. 실수로 눌렀을 경우를 대비해 바로 취소할 수 있게 한다.
-function renderUnmatchedRow(dep) {
-  const div = document.createElement('div');
-  div.className = 'unmatched-row';
-
-  const textSpan = document.createElement('span');
-  textSpan.className = 'dep-text';
-  textSpan.textContent = `${dep.date} · ${won(dep.amount)} · ${dep.memo || '(입금자명 없음)'}`;
-
-  const ignoreBtn = document.createElement('button');
-  ignoreBtn.type = 'button';
-  ignoreBtn.className = 'btn-ignore-deposit';
-  ignoreBtn.textContent = '상담료 등 (사건 무관)';
 
   function showIgnored(id) {
-    div.innerHTML = '';
+    row.innerHTML = '';
+    row.classList.add('ignored');
     const doneSpan = document.createElement('span');
-    doneSpan.className = 'dep-text dep-done';
-    doneSpan.textContent = `✅ ${dep.date} · ${won(dep.amount)} · ${dep.memo || '(입금자명 없음)'} — 사건 무관으로 표시됨`;
+    doneSpan.className = 'dep-info dep-done';
+    doneSpan.style.flex = '1';
+    doneSpan.textContent = `✅ ${item.deposit.date} · ${won(item.deposit.amount)} · ${item.deposit.memo || '(입금자명 없음)'} — 사건 무관으로 표시됨`;
     const undoBtn = document.createElement('button');
     undoBtn.type = 'button';
     undoBtn.className = 'btn-undo-ignore';
@@ -545,16 +502,14 @@ function renderUnmatchedRow(dep) {
       try {
         const res = await fetch(`/api/admin/fee-calendar/ignore-deposit/${id}`, { method: 'DELETE' });
         if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || '취소에 실패했습니다.'); }
-        div.innerHTML = '';
-        div.appendChild(textSpan);
-        div.appendChild(ignoreBtn);
+        row.replaceWith(renderReviewRow(item));
       } catch (err) {
         alert(err.message);
         undoBtn.disabled = false;
       }
     });
-    div.appendChild(doneSpan);
-    div.appendChild(undoBtn);
+    row.appendChild(doneSpan);
+    row.appendChild(undoBtn);
   }
 
   ignoreBtn.addEventListener('click', async () => {
@@ -564,7 +519,7 @@ function renderUnmatchedRow(dep) {
       const res = await fetch('/api/admin/fee-calendar/ignore-deposit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: dep.date, amount: dep.amount, memo: dep.memo || '' }),
+        body: JSON.stringify({ date: item.deposit.date, amount: item.deposit.amount, memo: item.deposit.memo || '' }),
       });
       const result = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(result.error || '처리에 실패했습니다.');
@@ -576,9 +531,35 @@ function renderUnmatchedRow(dep) {
     }
   });
 
-  div.appendChild(textSpan);
-  div.appendChild(ignoreBtn);
-  return div;
+  return row;
+}
+
+function renderImportPreview(data) {
+  document.getElementById('import-error').textContent = '';
+  const alreadyHandledNote = data.alreadyHandledCount ? ` · 이미 완료 처리됨 ${data.alreadyHandledCount}건(건너뜀)` : '';
+  const ignoredNote = data.ignoredCount ? ` · 사건 무관 처리됨 ${data.ignoredCount}건(건너뜀)` : '';
+  const comboCount = data.matched.filter((m) => m.combo).length;
+  const comboNote = comboCount ? ` (그중 묶음매칭 ${comboCount}건 🧩)` : '';
+  // "확인 필요"(후보 있음)와 "미매칭"(후보 없음)을 더 이상 나누지 않고 하나의 목록으로 합친다.
+  const needsReview = data.review.concat(
+    data.unmatched.map((dep) => ({ deposit: dep, reason: '', candidates: [] }))
+  );
+  document.getElementById('import-summary').textContent =
+    `자동 매칭 ${data.matched.length}건${comboNote} · 확인 필요 ${needsReview.length}건${alreadyHandledNote}${ignoredNote}`;
+
+  const matchedSection = document.getElementById('import-matched-section');
+  const matchedList = document.getElementById('matched-list');
+  matchedList.innerHTML = '';
+  document.getElementById('matched-count').textContent = data.matched.length;
+  matchedSection.classList.toggle('hidden', data.matched.length === 0);
+  data.matched.forEach((m) => matchedList.appendChild(renderMatchRow(m)));
+
+  const reviewSection = document.getElementById('import-review-section');
+  const reviewList = document.getElementById('review-list');
+  reviewList.innerHTML = '';
+  document.getElementById('review-count').textContent = needsReview.length;
+  reviewSection.classList.toggle('hidden', needsReview.length === 0);
+  needsReview.forEach((r) => reviewList.appendChild(renderReviewRow(r)));
 }
 
 document.getElementById('btn-upload-statement').addEventListener('click', () => {
@@ -594,7 +575,7 @@ document.getElementById('statement-file-input').addEventListener('change', async
   document.getElementById('import-modal').classList.remove('hidden');
   document.getElementById('import-summary').textContent = '분석 중...';
   document.getElementById('import-error').textContent = '';
-  ['import-matched-section', 'import-review-section', 'import-unmatched-section']
+  ['import-matched-section', 'import-review-section']
     .forEach((id) => document.getElementById(id).classList.add('hidden'));
 
   try {

@@ -1864,6 +1864,17 @@ app.post('/api/admin/fee-calendar/ignore-deposit', requireTab('fee'), (req, res)
   res.json({ id: info.lastInsertRowid, deposit_date: date, amount, memo, reason });
 });
 
+// "사건과 무관함(상담료 등)"으로 표시해둔 입금 전체 목록을 보여준다 — 통장매칭 화면에서
+// 표시만 하고 넘어가면 그 뒤로는 확인할 곳이 없었으므로, 나중에 다시 훑어보거나 실수로
+// 표시한 걸 찾아 취소할 수 있도록 최근 순으로 전체를 조회할 수 있게 한다.
+app.get('/api/admin/fee-calendar/ignored-deposits', requireTab('fee'), (req, res) => {
+  const rows = db.prepare(
+    `SELECT id, deposit_date, amount, memo, reason, created_at
+     FROM fee_calendar_ignored_deposits ORDER BY created_at DESC, id DESC`
+  ).all();
+  res.json(rows);
+});
+
 // 위 표시를 취소한다 (실수로 눌렀을 때 되돌리기 용도).
 app.delete('/api/admin/fee-calendar/ignore-deposit/:id', requireTab('fee'), (req, res) => {
   const info = db.prepare('DELETE FROM fee_calendar_ignored_deposits WHERE id = ?').run(req.params.id);

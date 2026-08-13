@@ -113,6 +113,11 @@ table.client-table td.muted { color: var(--text-muted); }
 .doc-badge.on { background: var(--status-good-bg); color: var(--status-good); }
 .doc-badge.off { background: var(--status-muted-bg); color: var(--text-muted); }
 .activity-text { white-space: nowrap; }
+.stage-badge {
+  font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+  display: inline-block; background: var(--status-muted-bg); color: var(--text-secondary);
+}
+.stage-badge.empty { color: var(--text-muted); font-weight: 400; }
 
 /* ---- modal (사건관리와 동일한 패턴) ---- */
 .modal-backdrop {
@@ -197,6 +202,7 @@ table.client-table td.muted { color: var(--text-muted); }
               <th>연락처</th>
               <th>관할법원</th>
               <th>사건번호</th>
+              <th>사건진행현황</th>
               <th>현재 현황</th>
             </tr>
           </thead>
@@ -213,6 +219,12 @@ table.client-table td.muted { color: var(--text-muted); }
       <h2 id="client-info-title">의뢰인 정보</h2>
       <p id="client-info-body" style="font-size:14px; line-height:1.8;"></p>
       <p style="font-size:12px; color:var(--text-secondary); margin:-6px 0 12px;">※ 인감도장·공동인증서 USB 수령 여부는 사건상세 페이지에서 확인/기록할 수 있습니다.</p>
+
+      <h3>사건진행현황</h3>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <select id="ci-stage-select" style="flex:1;"></select>
+        <span id="ci-stage-status" style="font-size:12px; color:var(--text-secondary); white-space:nowrap;"></span>
+      </div>
 
       <h3>현재 사건현황 (관련 일정)</h3>
       <table class="task-table" id="ci-task-table">
@@ -299,6 +311,23 @@ function clientActivitySummary(clientName) {
   return `✅ 최근 완료: ${escapeHTML(t.task_type)} (${t.due_date})`;
 }
 
+/* ---- 사건유형별 진행현황(단계) 목록 -----------------------------------------
+   case-detail.html과 동일한 기준을 그대로 쓴다 (한 곳에서만 바뀌도록 나중에 공용
+   스크립트로 뽑아도 되지만, 지금은 파일마다 독립적으로 동작하는 기존 구조를 따른다). */
+const STAGE_OPTIONS_BY_CASE_TYPE = {
+  '개인회생': ['접수', '금지명령', '보정', '개시', '집회', '인가'],
+};
+const DEFAULT_STAGE_OPTIONS = ['접수', '진행중', '완료'];
+function stageOptionsFor(caseType) {
+  return STAGE_OPTIONS_BY_CASE_TYPE[(caseType || '').trim()] || DEFAULT_STAGE_OPTIONS;
+}
+
+function stageBadgeHTML(stage) {
+  return stage
+    ? `<span class="stage-badge">${escapeHTML(stage)}</span>`
+    : `<span class="stage-badge empty">미지정</span>`;
+}
+
 function clientRowHTML(c) {
   return `
     <tr class="client-row" data-client-id="${escapeHTML(c.id)}">
@@ -306,6 +335,7 @@ function clientRowHTML(c) {
       <td class="muted">${escapeHTML(c.phone || '-')}</td>
       <td class="muted">${escapeHTML(c.court || '-')}</td>
       <td class="muted">${escapeHTML(c.court_case_no || '-')}</td>
+      <td>${stageBadgeHTML(c.current_stage)}</td>
       <td class="activity-text">${clientActivitySummary(c.client_name)}</td>
     </tr>`;
 }
@@ -351,6 +381,38 @@ function openClientInfoModal(c) {
     (c.court_case_no ? `사건번호: ${escapeHTML(c.court_case_no)}<br>` : '') +
     (c.phone ? `연락처: ${escapeHTML(c.phone)}<br>` : '') +
     `<span style="color:var(--text-secondary); font-size:12px;">※ 위 기본정보는 사건상세 페이지에서 입력/수정할 수 있습니다.</span>`;
+
+  // 사건진행현황: 팝업에서 바로 바꾸면 즉시 저장한다 (사건상세 페이지까지 안 가도 되도록).
+  const stageSelect = document.getElementById('ci-stage-select');
+  const stageStatusEl = document.getElementById('ci-stage-status');
+  stageStatusEl.textContent = '';
+  const stageOptions = stageOptionsFor(c.case_type);
+  stageSelect.innerHTML = '<option value="">미지정</option>' +
+    stageOptions.map((s) => `<option value="${escapeHTML(s)}">${escapeHTML(s)}</option>`).join('');
+  stageSelect.value = stageOptions.includes(c.current_stage) ? c.current_stage : '';
+  stageSelect.onchange = async () => {
+    if (!c.case_id) { stageStatusEl.textContent = '연결된 사건이 없어 변경할 수 없습니다.'; stageStatusEl.style.color = '#b23a3a'; return; }
+    const newStage = stageSelect.value;
+    const prevStage = c.current_stage;
+    stageSelect.disabled = true;
+    stageStatusEl.style.color = 'var(--text-secondary)';
+    stageStatusEl.textContent = '저장 중...';
+    try {
+      await api(`/api/cases/${c.case_id}`, { method: 'PATCH', body: JSON.stringify({ current_stage: newStage }) });
+      c.current_stage = newStage;
+      const listed = allClients.find((x) => x.id === c.id);
+      if (listed) listed.current_stage = newStage;
+      renderClientTable(document.getElementById('client-search-input').value);
+      stageStatusEl.textContent = '저장됨 ✓';
+      stageStatusEl.style.color = 'var(--status-good)';
+    } catch (err) {
+      stageSelect.value = stageOptions.includes(prevStage) ? prevStage : '';
+      stageStatusEl.textContent = err.message;
+      stageStatusEl.style.color = '#b23a3a';
+    } finally {
+      stageSelect.disabled = false;
+    }
+  };
 
   const nameKey = (c.client_name || '').trim().replace(/\s+/g, '');
   const related = (allTasks || []).filter((t) => (t.client_name || '').trim().replace(/\s+/g, '') === nameKey)

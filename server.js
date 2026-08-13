@@ -492,6 +492,11 @@ const uploadCaseFile = multer({
   storage: caseFileStorage,
   limits: { fileSize: CASE_FILE_MAX_SIZE },
   fileFilter: (req, file, cb) => {
+    // 브라우저는 파일명을 UTF-8로 보내는데, multer가 쓰는 busboy는 기본적으로 이를 latin1로
+    // 해석해서 한글 파일명이 깨진다(예: "상담결과리포트.pdf" → 알아볼 수 없는 문자열). fileFilter가
+    // filename 콜백보다 먼저 실행되므로, 여기서 한 번 되돌려두면 이후(파일명 저장, DB 기록)에서
+    // 전부 올바른 한글로 쓰인다.
+    file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
     const ext = path.extname(file.originalname).toLowerCase();
     if (!CASE_FILE_ALLOWED_EXT.includes(ext)) {
       return cb(new Error('허용되지 않는 파일 형식입니다 (PDF, 이미지, 문서 파일만 업로드할 수 있습니다).'));

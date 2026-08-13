@@ -2619,6 +2619,10 @@ app.get('/api/clients', requireLogin, (req, res) => {
       court: c.court || '',
       court_case_no: c.court_case_no || '',
       assignee_name: c.assignee_name || '',
+      // 의뢰인목록에서 "현재 사건진행현황"을 바로 보여주고 그 자리에서 바로 바꿀 수 있게 하려면
+      // 사건유형(case_type)도 같이 내려줘야 한다 - 유형별로 선택 가능한 단계 목록이 다르기 때문.
+      case_type: c.case_type || '',
+      current_stage: c.current_stage || '',
     }));
     res.json(clients);
   } catch (err) {

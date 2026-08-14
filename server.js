@@ -1089,6 +1089,21 @@ app.get('/api/schedules', requireLogin, (req, res) => {
   res.json(rows);
 });
 
+// PC "오늘 할일" 미니 창(Picture-in-Picture)용 요약. 팀 스케줄(오늘)과 사건관리(오늘 마감,
+// '연기'는 제외)를 한 번에 반환한다. /api/schedules는 start_at===end_at(종일 일정)인 경우
+// 그날 일정을 못 찾는 경계값 문제가 있어(부등호 비교) 여기서는 카카오 알림과 같은 방식으로
+// substr 비교를 직접 쓴다 - getTodaysCaseTasksForNotify()도 그대로 재사용한다(OSMU).
+app.get('/api/today', requireLogin, async (req, res) => {
+  const isAdmin = req.user.role === 'admin';
+  const todayStr = kstDateStringPlusDays(0);
+  const privacySql = isAdmin ? '' : 'AND is_private = 0';
+  const schedules = db
+    .prepare(`SELECT * FROM schedules WHERE substr(start_at, 1, 10) = ? ${privacySql} ORDER BY id`)
+    .all(todayStr);
+  const caseTasks = await getTodaysCaseTasksForNotify();
+  res.json({ schedules, caseTasks });
+});
+
 const SCHEDULE_CATEGORIES = ['업무', '보정', '상담', '휴가', '기타'];
 
 // 일정은 시/분/초 없이 날짜 단위로만 관리한다 (하루 종일 이벤트로 고정).

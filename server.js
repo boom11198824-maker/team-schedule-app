@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS kakao_recipients (
   label TEXT PRIMARY KEY,
   refresh_token TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
+  include_fee_calendar INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT
 );
 
@@ -147,6 +148,13 @@ try {
 }
 try {
   db.exec("ALTER TABLE case_tasks ADD COLUMN received_date TEXT");
+} catch (err) {
+  if (!String(err.message).includes('duplicate column')) throw err;
+}
+// 카카오 일정 알림 수신자 중 수임료 캘린더(case_fee_installments)도 함께 받을 사람을 표시하는 컬럼.
+// kakao_recipients 테이블이 먼저 배포된 뒤에 추가된 컬럼이라 기존 행과의 호환을 위해 마이그레이션한다.
+try {
+  db.exec("ALTER TABLE kakao_recipients ADD COLUMN include_fee_calendar INTEGER NOT NULL DEFAULT 0");
 } catch (err) {
   if (!String(err.message).includes('duplicate column')) throw err;
 }
@@ -2929,15 +2937,65 @@ function getTodaysScheduleForNotify() {
     .all(todayStr);
 }
 
+// 오늘(KST) 마감인 사건관리 서류/보정 제출 항목. case_tasks가 원본이며(OSMU), /api/case-tasks와
+// 마찬가지로 구글시트가 아직 원본으로 연동되어 있으면 시트를 우선 읽는다(보통은 이미 앱으로
+// 전환되어 있어 SQLite로 조회됨). 완료/예정과 무관하게 오늘 마감인 건은 모두 포함해 팀 스케줄
+// 달력이 오늘 보여주는 것과 동일하게 맞춘다.
+async function getTodaysCaseTasksForNotify() {
+  const todayStr = kstDateStringPlusDays(0);
+  try {
+    const sheetTasks = await readTasksFromSheetIfConnected();
+    if (sheetTasks) return sheetTasks.filter((t) => t.due_date === todayStr);
+  } catch (err) {
+    console.error('[kakao] 구글시트 일정_보정관리 읽기 실패, SQLite로 대체합니다:', err.message);
+  }
+  return db.prepare('SELECT * FROM case_tasks WHERE due_date = ? ORDER BY id').all(todayStr).map(caseTaskWithCase);
+}
+
+// 오늘(KST) 마감인 수임료 분할납부 회차. case_fee_installments가 원본(OSMU) - 수임료 전용
+// 캘린더(fee-calendar.html)와 동일한 데이터를 그대로 재사용한다. include_fee_calendar=1인
+// 수신자(예: 관리자 본인 폰)에게만 포함해서 보낸다 - sendDailyKakaoNotifications 참고.
+function getTodaysFeeInstallmentsForNotify() {
+  const todayStr = kstDateStringPlusDays(0);
+  return db
+    .prepare(
+      `SELECT fi.*, c.client_name FROM case_fee_installments fi
+       JOIN cases c ON c.id = fi.case_id
+       WHERE fi.due_date = ?
+       ORDER BY fi.id`
+    )
+    .all(todayStr);
+}
+
+// 사건관리(case_tasks) 항목 한 줄. 오늘 마감 항목만 다루므로 상태만으로 아이콘을 구분한다
+// (완료✅ / 아직 남음🔴 - 팀 스케줄 달력의 caseTaskEventIcon과 같은 의미).
+function caseTaskNotifyLine(t) {
+  const icon = t.status === '완료' ? '✅' : '🔴';
+  const name = t.client_name ? `${t.client_name} ` : '';
+  return `${icon} ${name}${t.task_type}`;
+}
+
+// 수임료 분할납부 회차 한 줄.
+function feeInstallmentNotifyLine(f) {
+  const icon = f.status === '완료' ? '✅' : '💰';
+  const amount = Number(f.amount || 0).toLocaleString('ko-KR');
+  return `${icon} ${f.client_name || ''} ${f.seq}회차 ${amount}원`;
+}
+
 // 카카오 "나에게 보내기" text 오브젝트는 최대 200자까지만 지원한다(카카오 공식 문서 기준).
-// 넘치면 뒤에서부터 줄여서 "…외 N건"으로 안내한다.
-function formatDailyKakaoMessage(schedules) {
+// 넘치면 뒤에서부터 줄여서 "…외 N건"으로 안내한다. feeInstallments는 생략 가능 - 수신자별로
+// 수임료 캘린더 포함 여부가 다르기 때문(sendDailyKakaoNotifications 참고).
+function formatDailyKakaoMessage(schedules, caseTasks, feeInstallments) {
   const { month, day, weekday } = kstTodayInfo();
-  if (!schedules.length) {
+  const scheduleLines = schedules.map((s) => `${s.all_day ? '종일' : String(s.start_at || '').slice(11, 16)} ${s.title}`);
+  const taskLines = (caseTasks || []).map(caseTaskNotifyLine);
+  const feeLines = (feeInstallments || []).map(feeInstallmentNotifyLine);
+  const lines = [...scheduleLines, ...taskLines, ...feeLines];
+
+  if (!lines.length) {
     return `📅 ${month}월 ${day}일 (${weekday})\n오늘 등록된 일정이 없습니다`;
   }
-  const header = `📅 ${month}월 ${day}일 (${weekday}) 오늘 일정 ${schedules.length}건`;
-  const lines = schedules.map((s) => `${s.all_day ? '종일' : String(s.start_at || '').slice(11, 16)} ${s.title}`);
+  const header = `📅 ${month}월 ${day}일 (${weekday}) 오늘 일정 ${lines.length}건`;
 
   const full = [header, ...lines].join('\n');
   if (full.length <= 200) return full;
@@ -2978,9 +3036,16 @@ async function sendDailyKakaoNotifications() {
     return { skipped: true, reason: 'env not configured' };
   }
   const recipients = db.prepare('SELECT * FROM kakao_recipients WHERE enabled = 1').all();
-  const message = formatDailyKakaoMessage(getTodaysScheduleForNotify());
+  const schedules = getTodaysScheduleForNotify();
+  const caseTasks = await getTodaysCaseTasksForNotify();
+  const baseMessage = formatDailyKakaoMessage(schedules, caseTasks);
+  // 수임료 캘린더는 include_fee_calendar=1인 수신자가 한 명이라도 있을 때만 계산한다(불필요한 조회 방지).
+  const feeInstallments = recipients.some((r) => r.include_fee_calendar) ? getTodaysFeeInstallmentsForNotify() : [];
+  const feeMessage = feeInstallments.length ? formatDailyKakaoMessage(schedules, caseTasks, feeInstallments) : baseMessage;
+
   const results = [];
   for (const r of recipients) {
+    const message = r.include_fee_calendar ? feeMessage : baseMessage;
     try {
       const tokenRes = await refreshKakaoAccessToken(r.refresh_token);
       updateKakaoRecipientRefreshTokenIfPresent(r.label, tokenRes);
@@ -2991,7 +3056,7 @@ async function sendDailyKakaoNotifications() {
       results.push({ label: r.label, ok: false, error: err.message });
     }
   }
-  return { message, recipientCount: recipients.length, results };
+  return { message: baseMessage, recipientCount: recipients.length, results };
 }
 
 // 최초 1회용 수신자 등록. label(예: 내업무폰/직원업무폰)이 등록될 폰 브라우저에서 직접 열어서 사용한다.
@@ -3058,12 +3123,17 @@ app.post('/api/admin/notify/daily/test', requireAdmin, async (req, res) => {
 });
 
 app.get('/api/kakao/recipients', requireAdmin, (req, res) => {
-  res.json(db.prepare('SELECT label, enabled, updated_at FROM kakao_recipients ORDER BY label').all());
+  res.json(db.prepare('SELECT label, enabled, include_fee_calendar, updated_at FROM kakao_recipients ORDER BY label').all());
 });
 
 app.patch('/api/kakao/recipients/:label', requireAdmin, (req, res) => {
-  const enabled = req.body && req.body.enabled ? 1 : 0;
-  db.prepare(`UPDATE kakao_recipients SET enabled = ?, updated_at = datetime('now') WHERE label = ?`).run(enabled, req.params.label);
+  const existing = db.prepare('SELECT * FROM kakao_recipients WHERE label = ?').get(req.params.label);
+  if (!existing) return res.status(404).json({ error: '등록되지 않은 수신자입니다.' });
+  const body = req.body || {};
+  const enabled = 'enabled' in body ? (body.enabled ? 1 : 0) : existing.enabled;
+  const includeFee = 'include_fee_calendar' in body ? (body.include_fee_calendar ? 1 : 0) : existing.include_fee_calendar;
+  db.prepare(`UPDATE kakao_recipients SET enabled = ?, include_fee_calendar = ?, updated_at = datetime('now') WHERE label = ?`)
+    .run(enabled, includeFee, req.params.label);
   res.json({ ok: true });
 });
 

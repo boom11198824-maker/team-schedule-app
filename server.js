@@ -3035,12 +3035,24 @@ async function sendDailyKakaoNotifications() {
     console.warn('[kakao] KAKAO_REST_API_KEY/KAKAO_CLIENT_SECRET 미설정 - 일정 알림 발송을 건너뜁니다.');
     return { skipped: true, reason: 'env not configured' };
   }
-  const recipients = db.prepare('SELECT * FROM kakao_recipients WHERE enabled = 1').all();
+  let recipients = db.prepare('SELECT * FROM kakao_recipients WHERE enabled = 1').all();
   const schedules = getTodaysScheduleForNotify();
   const caseTasks = await getTodaysCaseTasksForNotify();
-  const baseMessage = formatDailyKakaoMessage(schedules, caseTasks);
   // 수임료 캘린더는 include_fee_calendar=1인 수신자가 한 명이라도 있을 때만 계산한다(불필요한 조회 방지).
   const feeInstallments = recipients.some((r) => r.include_fee_calendar) ? getTodaysFeeInstallmentsForNotify() : [];
+
+  // 토/일(주말)에는 사무실이 쉬는 날이므로: 오늘 챙길 항목(일정/사건관리/수임료)이 하나도 없으면
+  // 아예 보내지 않고, 있을 때만 대표님 폰("내업무폰")에게만 보낸다 - 직원 폰은 주말엔 울리지 않는다.
+  const { weekday } = kstTodayInfo();
+  const isWeekend = weekday === '토' || weekday === '일';
+  if (isWeekend) {
+    const hasAnything = schedules.length > 0 || caseTasks.length > 0 || feeInstallments.length > 0;
+    if (!hasAnything) return { skipped: true, reason: 'weekend, nothing scheduled' };
+    recipients = recipients.filter((r) => r.label === '내업무폰');
+    if (!recipients.length) return { skipped: true, reason: 'weekend, 내업무폰 수신자가 등록되어 있지 않음' };
+  }
+
+  const baseMessage = formatDailyKakaoMessage(schedules, caseTasks);
   const feeMessage = feeInstallments.length ? formatDailyKakaoMessage(schedules, caseTasks, feeInstallments) : baseMessage;
 
   const results = [];

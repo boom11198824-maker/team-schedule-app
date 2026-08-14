@@ -216,6 +216,7 @@ button.btn-danger:hover { background: #f7d0d0; }
       <a href="/fee-calendar.html" id="nav-fee-calendar" class="btn-secondary" style="text-decoration:none; display:none;">💰 수임료 캘린더</a>
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="text-decoration:none; display:none;">⚙️ 설정</a>
       <button id="btn-employees" class="btn-secondary" style="display:none">직원 관리</button>
+      <button id="btn-today-pip" class="btn-secondary">📌 오늘 할일</button>
       <button id="btn-google" class="btn-secondary">구글 캘린더 연동</button>
       <span id="user-name" class="user-name"></span>
       <button id="btn-logout" class="btn-secondary">로그아웃</button>
@@ -1086,6 +1087,192 @@ document.getElementById('btn-disconnect-google').addEventListener('click', async
   refreshGoogleStatus();
   googleModal.classList.add('hidden');
 });
+
+/* ---- "오늘 할일" 미니 창 (Document Picture-in-Picture, 미지원 브라우저는 작은 팝업 창으로 대체) ----
+   사건관리(오늘 마감)는 그 자리에서 "완료" 버튼으로 바로 처리할 수 있고, 팀 스케줄(오늘)은 참고용으로
+   함께 보여준다. 창을 새로 만들지 않고 이미 열려 있으면 그 창에 포커스만 준다. */
+let todayPipWindow = null;
+
+const TODAY_PIP_STYLE = `
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
+    background: #f7f8fa; color: #14213d; font-size: 13px;
+  }
+  #today-pip-root { padding: 10px 12px 14px; }
+  .today-header {
+    font-weight: 700; font-size: 14px; padding-bottom: 8px; margin-bottom: 8px;
+    border-bottom: 1px solid #e2e6ed;
+  }
+  .today-section { margin-bottom: 14px; }
+  .today-section-title { font-size: 11px; font-weight: 700; color: #8993a6; margin-bottom: 6px; }
+  .today-empty { font-size: 12px; color: #8993a6; padding: 6px 0; }
+  .today-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 7px 0; border-bottom: 1px solid #eef1f6;
+  }
+  .today-row:last-child { border-bottom: none; }
+  .today-row-label { flex: 1; word-break: break-word; }
+  .today-row-done .today-row-label { color: #8993a6; text-decoration: line-through; }
+  .today-row-readonly { color: #4b5a78; }
+  .today-row-btn {
+    background: #ff6452; color: white; border: none; padding: 5px 12px; border-radius: 7px;
+    font-size: 12px; font-weight: 600; cursor: pointer; flex-shrink: 0;
+  }
+  .today-row-btn:hover { background: #e5503f; }
+  .today-row-btn:disabled { opacity: 0.6; cursor: default; }
+  .today-row-done-mark { font-size: 13px; flex-shrink: 0; }
+`;
+
+function buildTodayTaskRow(t) {
+  const row = document.createElement('div');
+  row.className = 'today-row' + (t.status === '완료' ? ' today-row-done' : '');
+  const label = document.createElement('span');
+  label.className = 'today-row-label';
+  label.textContent = `${t.client_name ? t.client_name + ' · ' : ''}${t.task_type}`;
+  row.appendChild(label);
+
+  if (t.status === '완료') {
+    const mark = document.createElement('span');
+    mark.className = 'today-row-done-mark';
+    mark.textContent = '✅';
+    row.appendChild(mark);
+    return row;
+  }
+
+  const btn = document.createElement('button');
+  btn.className = 'today-row-btn';
+  btn.textContent = '완료';
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = '처리중…';
+    try {
+      await api(`/api/case-tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: '완료' }) });
+      row.classList.add('today-row-done');
+      row.removeChild(btn);
+      const mark = document.createElement('span');
+      mark.className = 'today-row-done-mark';
+      mark.textContent = '✅';
+      row.appendChild(mark);
+      if (typeof calendar !== 'undefined' && calendar && calendar.refetchEvents) calendar.refetchEvents();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = '완료';
+      alert(err.message);
+    }
+  });
+  row.appendChild(btn);
+  return row;
+}
+
+function buildTodayScheduleRow(s) {
+  const row = document.createElement('div');
+  row.className = 'today-row today-row-readonly';
+  const meta = CATEGORY_META[s.category] || CATEGORY_META['업무'];
+  const namePart = s.assignee_name ? `[${s.assignee_name}] ` : '';
+  const label = document.createElement('span');
+  label.className = 'today-row-label';
+  label.textContent = `${meta.icon} ${namePart}${s.title}`;
+  row.appendChild(label);
+  return row;
+}
+
+function buildTodayWidget(data) {
+  const now = new Date();
+  const root = document.createElement('div');
+  root.id = 'today-pip-root';
+
+  const header = document.createElement('div');
+  header.className = 'today-header';
+  header.textContent = `📌 오늘 할일 · ${now.getMonth() + 1}월 ${now.getDate()}일`;
+  root.appendChild(header);
+
+  const pending = data.caseTasks.filter((t) => t.status !== '완료');
+  const taskSection = document.createElement('div');
+  taskSection.className = 'today-section';
+  const taskTitle = document.createElement('div');
+  taskTitle.className = 'today-section-title';
+  taskTitle.textContent = `사건관리 (${pending.length}건 남음)`;
+  taskSection.appendChild(taskTitle);
+  if (!data.caseTasks.length) {
+    const empty = document.createElement('div');
+    empty.className = 'today-empty';
+    empty.textContent = '오늘 마감인 사건관리 업무가 없습니다.';
+    taskSection.appendChild(empty);
+  } else {
+    data.caseTasks
+      .slice()
+      .sort((a, b) => (a.status === '완료') - (b.status === '완료'))
+      .forEach((t) => taskSection.appendChild(buildTodayTaskRow(t)));
+  }
+  root.appendChild(taskSection);
+
+  const scheduleSection = document.createElement('div');
+  scheduleSection.className = 'today-section';
+  const scheduleTitle = document.createElement('div');
+  scheduleTitle.className = 'today-section-title';
+  scheduleTitle.textContent = '팀 스케줄';
+  scheduleSection.appendChild(scheduleTitle);
+  if (!data.schedules.length) {
+    const empty = document.createElement('div');
+    empty.className = 'today-empty';
+    empty.textContent = '오늘 등록된 일정이 없습니다.';
+    scheduleSection.appendChild(empty);
+  } else {
+    data.schedules.forEach((s) => scheduleSection.appendChild(buildTodayScheduleRow(s)));
+  }
+  root.appendChild(scheduleSection);
+
+  return root;
+}
+
+async function openTodayPip() {
+  if (todayPipWindow && !todayPipWindow.closed) {
+    todayPipWindow.focus();
+    return;
+  }
+
+  // documentPictureInPicture.requestWindow()는 클릭 이벤트 핸들러 안에서 다른 await 없이 바로
+  // 호출해야 사용자 제스처로 인정된다 - 그래서 데이터를 먼저 불러오지 않고 창부터 연다.
+  const supportsPip = !!window.documentPictureInPicture;
+  let pipWindow;
+  try {
+    pipWindow = supportsPip
+      ? await window.documentPictureInPicture.requestWindow({ width: 300, height: 420 })
+      : window.open('', 'todayPip', 'popup=1,width=320,height=460');
+  } catch (err) {
+    alert('미니 창을 열지 못했습니다: ' + err.message);
+    return;
+  }
+  if (!pipWindow) {
+    alert('팝업이 차단되었습니다. 브라우저의 팝업 차단을 해제한 뒤 다시 시도해주세요.');
+    return;
+  }
+
+  pipWindow.document.title = '오늘 할일';
+  const style = pipWindow.document.createElement('style');
+  style.textContent = TODAY_PIP_STYLE;
+  pipWindow.document.head.appendChild(style);
+  const loading = document.createElement('div');
+  loading.id = 'today-pip-root';
+  loading.style.cssText = 'padding:16px; font-size:13px; color:#8993a6;';
+  loading.textContent = '불러오는 중…';
+  pipWindow.document.body.appendChild(loading);
+  todayPipWindow = pipWindow;
+
+  let data;
+  try {
+    data = await api('/api/today');
+  } catch (err) {
+    loading.textContent = err.message;
+    return;
+  }
+  if (pipWindow.closed) return;
+
+  pipWindow.document.body.replaceChild(buildTodayWidget(data), loading);
+}
+
+document.getElementById('btn-today-pip').addEventListener('click', openTodayPip);
 
 document.getElementById('btn-logout').addEventListener('click', async () => {
   await api('/api/auth/logout', { method: 'POST' });

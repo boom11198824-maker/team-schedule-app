@@ -1999,7 +1999,9 @@ app.post('/api/admin/fee-calendar/bulk-complete', requireTab('fee'), (req, res) 
 
 /* ---- /api/case-tasks (사건별 서류/보정 일정) ---- */
 
-const CASE_TASK_STATUSES = ['예정', '진행중', '완료'];
+// '연기'는 "보정연기" 기능(POST /api/case-tasks/:id/postpone)이 원래 건의 상태를 바꿔둘 때만 쓴다 -
+// 새로 만들어지는 건은 그대로 '예정'으로 시작한다.
+const CASE_TASK_STATUSES = ['예정', '진행중', '완료', '연기'];
 
 function caseTaskWithCase(task) {
   const c = db.prepare('SELECT client_name, court, court_case_no FROM cases WHERE id = ?').get(task.case_id) || {};
@@ -2150,6 +2152,51 @@ app.delete('/api/case-tasks/:id', requireLogin, async (req, res) => {
   } catch (err) { console.error('구글 캘린더 삭제 실패:', err.message); }
 
   res.json({ ok: true });
+});
+
+// "보정연기": 보정서 제출 마감을 N일 뒤로 미룬다. 기존 건은 삭제/덮어쓰지 않고 상태만 '연기'로
+// 바꿔 그대로 남겨둔다(몇 번 연기했는지 이력을 알 수 있어야 하므로 - 사용자 확정 사항). 대신
+// 같은 내용(업무구분/수령일/담당자/메모)에 마감예정일만 새로 계산해서 새 건을 하나 더 만들고,
+// 그 새 건이 이제부터 진짜 마감 예정 건이 된다.
+app.post('/api/case-tasks/:id/postpone', requireLogin, async (req, res) => {
+  if (String(req.params.id).startsWith('sheet-')) {
+    return res.status(400).json({ error: '이 일정은 구글시트에서 관리됩니다. 시트에서 직접 관리해주세요.', code: 'SHEET_MANAGED' });
+  }
+
+  const task = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(req.params.id);
+  if (!task) return res.status(404).json({ error: '일정을 찾을 수 없습니다.' });
+  if (task.task_type !== '보정서 제출') {
+    return res.status(400).json({ error: '보정연기는 "보정서 제출" 업무에만 사용할 수 있습니다.' });
+  }
+  if (task.status !== '예정') {
+    return res.status(400).json({ error: '이미 처리(연기/진행중/완료)된 일정은 다시 연기할 수 없습니다.' });
+  }
+
+  const days = Number(req.body && req.body.days);
+  if (!Number.isInteger(days) || days <= 0) {
+    return res.status(400).json({ error: '연기 일수는 1 이상의 정수여야 합니다.' });
+  }
+
+  db.prepare(`UPDATE case_tasks SET status = '연기', updated_at = datetime('now') WHERE id = ?`).run(task.id);
+
+  const newDueDate = addDaysToDateString(task.due_date, days);
+  const info = db
+    .prepare(`INSERT INTO case_tasks (case_id, task_type, received_date, due_date, status, assignee_name, memo, created_by)
+              VALUES (?, ?, ?, ?, '예정', ?, ?, ?)`)
+    .run(task.case_id, task.task_type, task.received_date || '', newDueDate, task.assignee_name || '', task.memo || '', req.user.id);
+
+  const newTask = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(info.lastInsertRowid);
+
+  try {
+    const googleEventId = await googleCreateEvent(caseTaskToGoogleEvent(newTask));
+    if (googleEventId) {
+      db.prepare('UPDATE case_tasks SET google_event_id = ? WHERE id = ?').run(googleEventId, newTask.id);
+      newTask.google_event_id = googleEventId;
+    }
+  } catch (err) { console.error('구글 캘린더 등록 실패(보정연기):', err.message); }
+
+  const oldTask = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(task.id);
+  res.status(201).json({ oldTask: caseTaskWithCase(oldTask), newTask: caseTaskWithCase(newTask) });
 });
 
 /* ---- /api/sheets (사건목록 내보내기 + 일정_보정관리 구글시트 연동 상태) ---- */
@@ -2940,16 +2987,17 @@ function getTodaysScheduleForNotify() {
 // 오늘(KST) 마감인 사건관리 서류/보정 제출 항목. case_tasks가 원본이며(OSMU), /api/case-tasks와
 // 마찬가지로 구글시트가 아직 원본으로 연동되어 있으면 시트를 우선 읽는다(보통은 이미 앱으로
 // 전환되어 있어 SQLite로 조회됨). 완료/예정과 무관하게 오늘 마감인 건은 모두 포함해 팀 스케줄
-// 달력이 오늘 보여주는 것과 동일하게 맞춘다.
+// 달력이 오늘 보여주는 것과 동일하게 맞춘다. 단, '연기'는 제외한다 - 보정연기로 이미 새 마감일의
+// 새 건이 따로 만들어졌으므로, 원래 건이 오늘 마감이었더라도 더 이상 실제로 챙길 필요가 없다.
 async function getTodaysCaseTasksForNotify() {
   const todayStr = kstDateStringPlusDays(0);
   try {
     const sheetTasks = await readTasksFromSheetIfConnected();
-    if (sheetTasks) return sheetTasks.filter((t) => t.due_date === todayStr);
+    if (sheetTasks) return sheetTasks.filter((t) => t.due_date === todayStr && t.status !== '연기');
   } catch (err) {
     console.error('[kakao] 구글시트 일정_보정관리 읽기 실패, SQLite로 대체합니다:', err.message);
   }
-  return db.prepare('SELECT * FROM case_tasks WHERE due_date = ? ORDER BY id').all(todayStr).map(caseTaskWithCase);
+  return db.prepare(`SELECT * FROM case_tasks WHERE due_date = ? AND status != '연기' ORDER BY id`).all(todayStr).map(caseTaskWithCase);
 }
 
 // 오늘(KST) 마감인 수임료 분할납부 회차. case_fee_installments가 원본(OSMU) - 수임료 전용

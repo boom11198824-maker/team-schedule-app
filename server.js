@@ -16,6 +16,7 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const XLSX = require('xlsx');
+const crypto = require('crypto');
 
 /* ------------------------------------------------------------------ */
 /* 데이터베이스                                                        */
@@ -69,6 +70,15 @@ CREATE TABLE IF NOT EXISTS google_auth (
   calendar_summary TEXT,
   connected_by INTEGER,
   connected_at TEXT
+);
+
+-- 팀 일정 카카오톡 알림("나에게 보내기") 수신자. label마다 카카오 로그인 refresh_token을
+-- 하나씩 보관한다 - 등록된 계정 수만큼 각자의 "나와의 채팅방"으로 발송할 수 있다.
+CREATE TABLE IF NOT EXISTS kakao_recipients (
+  label TEXT PRIMARY KEY,
+  refresh_token TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS cases (
@@ -2809,6 +2819,258 @@ app.get('/api/google/callback', async (req, res) => {
 });
 
 app.post('/api/google/disconnect', requireAdmin, (req, res) => { disconnectGoogle(); res.json({ ok: true }); });
+
+/* ------------------------------------------------------------------ */
+/* 팀 일정 카카오톡 알림 ("나에게 보내기")                                */
+/*   - 의뢰인 대상 알림톡(솔라피)과는 완전히 별개의 기능이다.               */
+/*   - 카카오 로그인 개인 API라 채널 심사가 필요 없고, label(계정)마다     */
+/*     refresh_token을 하나씩 저장해서 등록된 계정 수만큼 각자의           */
+/*     "나와의 채팅방"으로 발송한다.                                      */
+/* ------------------------------------------------------------------ */
+
+// 카카오 인가 URL에 실어 보내는 state를 서명한다 - 누구든 /kakao/callback을 직접 호출해서
+// 아무 label로나 수신자를 등록해버리는 것을 막기 위함. 발급 후 10분 이내에만 유효하다.
+function signKakaoLinkState(label) {
+  const secret = process.env.KAKAO_LINK_SETUP_KEY || '';
+  const ts = Date.now().toString();
+  const sig = crypto.createHmac('sha256', secret).update(`${label}.${ts}`).digest('hex').slice(0, 32);
+  return Buffer.from(`${label}.${ts}.${sig}`, 'utf8').toString('base64url');
+}
+
+function verifyKakaoLinkState(state) {
+  try {
+    const [label, ts, sig] = Buffer.from(String(state), 'base64url').toString('utf8').split('.');
+    if (!label || !ts || !sig) return null;
+    const secret = process.env.KAKAO_LINK_SETUP_KEY || '';
+    const expected = crypto.createHmac('sha256', secret).update(`${label}.${ts}`).digest('hex').slice(0, 32);
+    if (sig !== expected) return null;
+    if (Date.now() - Number(ts) > 10 * 60 * 1000) return null; // 10분 초과 시 재사용 불가
+    return label;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function exchangeKakaoAuthCode(code) {
+  const params = new URLSearchParams({
+    grant_type: 'authorization_code',
+    client_id: process.env.KAKAO_REST_API_KEY || '',
+    redirect_uri: process.env.KAKAO_REDIRECT_URI || '',
+    code,
+    client_secret: process.env.KAKAO_CLIENT_SECRET || '',
+  });
+  const res = await fetch('https://kauth.kakao.com/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+    body: params,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_description || data.error || '카카오 토큰 교환에 실패했습니다.');
+  return data; // { access_token, refresh_token, ... }
+}
+
+// 리프레시 토큰으로 액세스 토큰을 새로 받는다. 카카오는 리프레시 토큰 잔여 유효기간이
+// 1개월 미만일 때만 응답에 새 refresh_token을 실어 보낸다 - 없다고 기존 값을 지우면 안 되고,
+// 왔는데 저장을 안 하면 다음 갱신에서 막힌다 (updateKakaoRecipientRefreshTokenIfPresent 참고).
+async function refreshKakaoAccessToken(refreshToken) {
+  const params = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: process.env.KAKAO_REST_API_KEY || '',
+    refresh_token: refreshToken,
+    client_secret: process.env.KAKAO_CLIENT_SECRET || '',
+  });
+  const res = await fetch('https://kauth.kakao.com/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+    body: params,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_description || data.error || '카카오 토큰 갱신에 실패했습니다.');
+  return data; // { access_token, refresh_token?, ... }
+}
+
+function upsertKakaoRecipient(label, refreshToken) {
+  db.prepare(
+    `INSERT INTO kakao_recipients (label, refresh_token, enabled, updated_at)
+     VALUES (?, ?, 1, datetime('now'))
+     ON CONFLICT(label) DO UPDATE SET refresh_token = excluded.refresh_token, enabled = 1, updated_at = excluded.updated_at`
+  ).run(label, refreshToken);
+}
+
+function updateKakaoRecipientRefreshTokenIfPresent(label, tokenResponse) {
+  if (tokenResponse && tokenResponse.refresh_token) {
+    db.prepare(`UPDATE kakao_recipients SET refresh_token = ?, updated_at = datetime('now') WHERE label = ?`)
+      .run(tokenResponse.refresh_token, label);
+  }
+}
+
+function kstTodayInfo() {
+  const now = new Date();
+  const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(now);
+  const weekday = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', weekday: 'short' }).format(now).replace('요일', '').trim();
+  const [, m, d] = ymd.split('-');
+  return { month: Number(m), day: Number(d), weekday };
+}
+
+function kstDateStringPlusDays(days) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date(Date.now() + days * 86400000));
+}
+
+// 오늘(KST) 일정만 뽑는다. HTTP로 /api/schedules를 다시 부르지 않고 같은 프로세스 안에서 직접 조회한다.
+// 이 앱은 모든 일정을 하루짜리 종일 이벤트로만 저장하며(start_at === end_at, 시각은 항상 자정 고정),
+// /api/schedules의 "start_at < end AND end_at > start" 부등호 비교는 이 경우 start_at===end_at인
+// 날짜의 이벤트를 걸러내지 못한다(등호 경계라 end_at > start가 거짓이 됨) - 그래서 여기서는 그 로직을
+// 그대로 베끼지 않고, 오늘 날짜(YYYY-MM-DD) 접두어가 정확히 일치하는지로 직접 비교한다.
+// is_private=1(관리자 전용 비공개 일정)은 항상 제외한다.
+function getTodaysScheduleForNotify() {
+  const todayStr = kstDateStringPlusDays(0);
+  return db
+    .prepare(`SELECT * FROM schedules WHERE substr(start_at, 1, 10) = ? AND is_private = 0 ORDER BY id`)
+    .all(todayStr);
+}
+
+// 카카오 "나에게 보내기" text 오브젝트는 최대 200자까지만 지원한다(카카오 공식 문서 기준).
+// 넘치면 뒤에서부터 줄여서 "…외 N건"으로 안내한다.
+function formatDailyKakaoMessage(schedules) {
+  const { month, day, weekday } = kstTodayInfo();
+  if (!schedules.length) {
+    return `📅 ${month}월 ${day}일 (${weekday})\n오늘 등록된 일정이 없습니다`;
+  }
+  const header = `📅 ${month}월 ${day}일 (${weekday}) 오늘 일정 ${schedules.length}건`;
+  const lines = schedules.map((s) => `${s.all_day ? '종일' : String(s.start_at || '').slice(11, 16)} ${s.title}`);
+
+  const full = [header, ...lines].join('\n');
+  if (full.length <= 200) return full;
+
+  for (let shown = lines.length - 1; shown >= 0; shown -= 1) {
+    const candidate = [header, ...lines.slice(0, shown), `…외 ${lines.length - shown}건 (앱에서 확인)`].join('\n');
+    if (candidate.length <= 200) return candidate;
+  }
+  return header.slice(0, 200);
+}
+
+async function sendKakaoMemo(accessToken, text) {
+  const linkUrl = process.env.KAKAO_LINK_URL || '';
+  const templateObject = {
+    object_type: 'text',
+    text,
+    link: { web_url: linkUrl, mobile_web_url: linkUrl },
+    button_title: '일정 보기',
+  };
+  const res = await fetch('https://kapi.kakao.com/v2/api/talk/memo/default/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+    },
+    body: new URLSearchParams({ template_object: JSON.stringify(templateObject) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.result_code !== 0) {
+    throw new Error(`카카오 발송 실패 (HTTP ${res.status}, result_code=${data.result_code}): ${data.msg || JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+async function sendDailyKakaoNotifications() {
+  if (!process.env.KAKAO_REST_API_KEY || !process.env.KAKAO_CLIENT_SECRET) {
+    console.warn('[kakao] KAKAO_REST_API_KEY/KAKAO_CLIENT_SECRET 미설정 - 일정 알림 발송을 건너뜁니다.');
+    return { skipped: true, reason: 'env not configured' };
+  }
+  const recipients = db.prepare('SELECT * FROM kakao_recipients WHERE enabled = 1').all();
+  const message = formatDailyKakaoMessage(getTodaysScheduleForNotify());
+  const results = [];
+  for (const r of recipients) {
+    try {
+      const tokenRes = await refreshKakaoAccessToken(r.refresh_token);
+      updateKakaoRecipientRefreshTokenIfPresent(r.label, tokenRes);
+      await sendKakaoMemo(tokenRes.access_token, message);
+      results.push({ label: r.label, ok: true });
+    } catch (err) {
+      console.error(`[kakao] ${r.label} 발송 실패:`, err.message);
+      results.push({ label: r.label, ok: false, error: err.message });
+    }
+  }
+  return { message, recipientCount: recipients.length, results };
+}
+
+// 최초 1회용 수신자 등록. label(예: 내업무폰/직원업무폰)이 등록될 폰 브라우저에서 직접 열어서 사용한다.
+app.get('/kakao/link', (req, res) => {
+  const { label, key } = req.query;
+  if (!label) return res.status(400).send('label 파라미터가 필요합니다.');
+  if (!process.env.KAKAO_LINK_SETUP_KEY || key !== process.env.KAKAO_LINK_SETUP_KEY) {
+    return res.status(403).send('접근 권한이 없습니다.');
+  }
+  if (!process.env.KAKAO_REST_API_KEY || !process.env.KAKAO_REDIRECT_URI) {
+    return res.status(500).send('카카오 연동 환경변수가 설정되지 않았습니다.');
+  }
+  const url = new URL('https://kauth.kakao.com/oauth/authorize');
+  url.searchParams.set('client_id', process.env.KAKAO_REST_API_KEY);
+  url.searchParams.set('redirect_uri', process.env.KAKAO_REDIRECT_URI);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('scope', 'talk_message');
+  url.searchParams.set('state', signKakaoLinkState(label));
+  res.redirect(url.toString());
+});
+
+app.get('/kakao/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) return res.status(400).send(`카카오 인증이 취소되었습니다: ${error}`);
+  const label = verifyKakaoLinkState(state);
+  if (!label) return res.status(400).send('유효하지 않거나 만료된 요청입니다. 등록 링크를 다시 요청해주세요.');
+  if (!code) return res.status(400).send('인증 코드가 없습니다.');
+  try {
+    const tokens = await exchangeKakaoAuthCode(code);
+    if (!tokens.refresh_token) throw new Error('카카오로부터 refresh_token을 받지 못했습니다.');
+    upsertKakaoRecipient(label, tokens.refresh_token);
+    res.send(
+      `<html><body style="font-family:sans-serif; text-align:center; padding:60px 20px;">` +
+      `<h2>등록 완료 ✅</h2><p>"${label}" 계정으로 매일 아침 일정 알림이 발송됩니다.</p>` +
+      `<p style="color:#888; font-size:13px;">이 창은 닫으셔도 됩니다.</p></body></html>`
+    );
+  } catch (err) {
+    console.error('카카오 연동 실패:', err.message);
+    res.status(500).send('카카오 연동 중 오류가 발생했습니다: ' + err.message);
+  }
+});
+
+// 외부 스케줄러(GitHub Actions 등)가 매일 아침 호출하는 발송 엔드포인트.
+app.post('/api/notify/daily', async (req, res) => {
+  const key = req.get('X-Notify-Key') || req.query.key;
+  if (!process.env.KAKAO_NOTIFY_KEY || key !== process.env.KAKAO_NOTIFY_KEY) {
+    return res.status(403).json({ error: '권한이 없습니다.' });
+  }
+  try {
+    res.json(await sendDailyKakaoNotifications());
+  } catch (err) {
+    console.error('일정 알림 발송 실패:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 관리자가 직접 테스트/재발송할 때 쓰는 수동 실행용.
+app.post('/api/admin/notify/daily/test', requireAdmin, async (req, res) => {
+  try {
+    res.json(await sendDailyKakaoNotifications());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/kakao/recipients', requireAdmin, (req, res) => {
+  res.json(db.prepare('SELECT label, enabled, updated_at FROM kakao_recipients ORDER BY label').all());
+});
+
+app.patch('/api/kakao/recipients/:label', requireAdmin, (req, res) => {
+  const enabled = req.body && req.body.enabled ? 1 : 0;
+  db.prepare(`UPDATE kakao_recipients SET enabled = ?, updated_at = datetime('now') WHERE label = ?`).run(enabled, req.params.label);
+  res.json({ ok: true });
+});
+
+app.delete('/api/kakao/recipients/:label', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM kakao_recipients WHERE label = ?').run(req.params.label);
+  res.json({ ok: true });
+});
 
 /* ---- 정적 페이지 ---- */
 

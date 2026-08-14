@@ -127,6 +127,7 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
 .status-pill.예정 { background: var(--status-muted-bg); color: var(--text-secondary); }
 .status-pill.진행중 { background: var(--status-warning-bg); color: var(--status-warning); }
 .status-pill.완료 { background: var(--status-good-bg); color: var(--status-good); }
+.status-pill.연기 { background: var(--status-serious-bg); color: var(--status-serious); }
 .match-source-tag { font-size: 10px; color: var(--text-muted); margin-left: 4px; white-space: nowrap; }
 
 .mini-form { background: #f7f8fa; border: 1px solid var(--gridline); border-radius: 10px; padding: 12px; margin-top: 12px; }
@@ -368,6 +369,7 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
                   <option value="예정">예정</option>
                   <option value="진행중">진행중</option>
                   <option value="완료">완료</option>
+                  <option value="연기">연기</option>
                 </select>
               </div>
             </div>
@@ -818,14 +820,38 @@ async function renderTaskTable() {
           <td>${t.due_date}</td>
           <td><span class="status-pill ${t.status}">${t.status}</span></td>
           <td class="actions-cell">
-            ${t.source === 'sheet' ? '' : `<button type="button" class="btn-small" data-edit-task="${t.id}">편집</button>`}
+            ${t.source === 'sheet' ? '' : `
+              ${t.task_type === '보정서 제출' && t.status === '예정' ? `<button type="button" class="btn-small" data-postpone-task="${t.id}">보정연기</button>` : ''}
+              <button type="button" class="btn-small" data-edit-task="${t.id}">편집</button>
+            `}
           </td>
         </tr>`).join('');
     tbody.querySelectorAll('[data-edit-task]').forEach((btn) => {
       btn.addEventListener('click', () => loadTaskIntoForm(tasks.find((t) => String(t.id) === btn.dataset.editTask)));
     });
+    tbody.querySelectorAll('[data-postpone-task]').forEach((btn) => {
+      btn.addEventListener('click', () => postponeTask(btn.dataset.postponeTask));
+    });
   }
   await renderRecentSubmit();
+}
+
+// "보정연기": 며칠 미룰지 물어보고, 기존 마감예정일 + 입력한 일수로 새 마감예정일을 계산해서
+// 새 일정을 만든다. 기존 건은 지우지 않고 상태만 "연기"로 남겨서 몇 번 연기했는지 알 수 있게 한다.
+async function postponeTask(taskId) {
+  const input = prompt('몇일 연기할까요?');
+  if (input === null) return; // 취소
+  const days = Number(input);
+  if (!Number.isInteger(days) || days <= 0) {
+    alert('1 이상의 숫자를 입력해주세요.');
+    return;
+  }
+  try {
+    await api(`/api/case-tasks/${taskId}/postpone`, { method: 'POST', body: JSON.stringify({ days }) });
+    await renderTaskTable();
+  } catch (err) {
+    alert(err.message);
+  }
 }
 
 function loadTaskIntoForm(task) {

@@ -1,0 +1,16 @@
+name: Daily Kakao Schedule Notify
+
+on:
+  schedule:
+    - cron: '30 23 * * 0-4'
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call daily notify endpoint
+        run: |
+          curl -sf -X POST "https://team-schedule-app-apd5.onrender.com/api/notify/daily" \
+            -H "X-Notify-Key: ${{ secrets.KAKAO_NOTIFY_KEY }}" \
+            --max-time 90 --retry 3 --retry-delay 15

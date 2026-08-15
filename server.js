@@ -2095,11 +2095,16 @@ app.post('/api/case-tasks', requireLogin, async (req, res) => {
   const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(case_id);
   if (!caseRow) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
 
+  // 직원 계정은 새로 올리는 서류/보정일정의 담당자가 항상 본인 이름으로 고정된다 - 프론트엔드에서
+  // 드롭다운을 잠가둔 것과 별개로, 여기서도 강제해야 API를 직접 호출해서 남의 이름으로 등록하는
+  // 것을 막을 수 있다. 관리자만 담당자를 자유롭게 지정할 수 있다.
+  const resolvedAssignee = req.user.role === 'admin' ? (assignee_name || caseRow.assignee_name || '') : req.user.name;
+
   const safeStatus = CASE_TASK_STATUSES.includes(status) ? status : '예정';
   const info = db
     .prepare(`INSERT INTO case_tasks (case_id, task_type, received_date, due_date, status, assignee_name, memo, created_by)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(case_id, task_type, received_date || '', due_date, safeStatus, assignee_name || caseRow.assignee_name || '', memo || '', req.user.id);
+    .run(case_id, task_type, received_date || '', due_date, safeStatus, resolvedAssignee, memo || '', req.user.id);
 
   const task = db.prepare('SELECT * FROM case_tasks WHERE id = ?').get(info.lastInsertRowid);
 

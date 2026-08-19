@@ -104,6 +104,23 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
 .empty-note { color: var(--text-muted); font-size: 13px; text-align: center; padding: 20px 0; }
 
+.fee-view-toggle { display: flex; gap: 6px; margin: 0 0 14px; }
+.fee-view-btn {
+  font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--gridline); background: var(--card-surface); color: var(--text-secondary);
+}
+.fee-view-btn:hover { background: #eef1f6; }
+.fee-view-btn.active { background: var(--brand-coral); border-color: var(--brand-coral); color: white; }
+
+.fee-table-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.fee-table-month-label { font-size: 15px; font-weight: 700; color: var(--text-primary); min-width: 84px; text-align: center; }
+
+.fee-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.fee-table th, .fee-table td { text-align: left; padding: 9px 6px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
+.fee-table tbody tr { cursor: pointer; }
+.fee-table tbody tr:hover { background: var(--surface-1); }
+.fee-table-status { color: white; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+
 #calendar .fc-event { cursor: pointer; font-size: 12px; }
 #calendar .fc-toolbar-title { font-size: 16px; }
 
@@ -212,7 +229,26 @@ button.btn-ignore-deposit:disabled { cursor: not-allowed; opacity: 0.6; }
   <main>
     <div class="layout">
       <div class="card">
-        <div id="calendar"></div>
+        <div class="fee-view-toggle">
+          <button type="button" class="fee-view-btn active" id="fee-view-table-btn">테이블</button>
+          <button type="button" class="fee-view-btn" id="fee-view-calendar-btn">캘린더</button>
+        </div>
+
+        <div id="fee-table-view-wrap">
+          <div class="fee-table-nav">
+            <button type="button" class="btn-secondary" id="fee-table-prev">◀</button>
+            <span class="fee-table-month-label" id="fee-table-month-label"></span>
+            <button type="button" class="btn-secondary" id="fee-table-next">▶</button>
+            <button type="button" class="btn-secondary" id="fee-table-today">오늘</button>
+          </div>
+          <table class="fee-table">
+            <thead><tr><th>예정일</th><th>의뢰인</th><th>회차</th><th>금액</th><th>상태</th></tr></thead>
+            <tbody id="fee-table-tbody"></tbody>
+          </table>
+          <p id="fee-table-empty-note" class="empty-note hidden">이 달에 등록된 납부 회차가 없습니다.</p>
+        </div>
+
+        <div id="calendar" class="hidden"></div>
       </div>
       <div>
         <div class="card">
@@ -312,6 +348,8 @@ button.btn-ignore-deposit:disabled { cursor: not-allowed; opacity: 0.6; }
 <script>
 let currentUser = null;
 let calendar = null;
+let feeCalViewMode = 'table';
+let feeTableMonth = null; // Date(그 달의 1일) - 테이블 형식에서 보고 있는 달
 
 function pad(n) { return String(n).padStart(2, '0'); }
 function dateOnly(date) {
@@ -394,6 +432,85 @@ function setupCalendar() {
     },
   });
   calendar.render();
+}
+
+// "테이블"/"캘린더" 두 형식 중 하나를 고른다. 기본값은 테이블 — 캘린더는 FullCalendar를
+// display:none 상태에서 처음 렌더하면 크기 계산이 깨지는 문제가 있어서, 처음 캘린더로
+// 전환하는 시점에만 setupCalendar()를 지연 호출한다(이미 만들어져 있으면 updateSize만).
+function setFeeCalViewMode(mode) {
+  feeCalViewMode = mode;
+  document.getElementById('fee-view-table-btn').classList.toggle('active', mode === 'table');
+  document.getElementById('fee-view-calendar-btn').classList.toggle('active', mode === 'calendar');
+  document.getElementById('fee-table-view-wrap').classList.toggle('hidden', mode !== 'table');
+  document.getElementById('calendar').classList.toggle('hidden', mode !== 'calendar');
+  if (mode === 'calendar') {
+    if (!calendar) setupCalendar();
+    else calendar.updateSize();
+  } else {
+    renderFeeTable();
+  }
+}
+
+document.getElementById('fee-view-table-btn').addEventListener('click', () => setFeeCalViewMode('table'));
+document.getElementById('fee-view-calendar-btn').addEventListener('click', () => setFeeCalViewMode('calendar'));
+
+function changeFeeTableMonth(delta) {
+  if (!feeTableMonth) feeTableMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  feeTableMonth = new Date(feeTableMonth.getFullYear(), feeTableMonth.getMonth() + delta, 1);
+  renderFeeTable();
+}
+
+document.getElementById('fee-table-prev').addEventListener('click', () => changeFeeTableMonth(-1));
+document.getElementById('fee-table-next').addEventListener('click', () => changeFeeTableMonth(1));
+document.getElementById('fee-table-today').addEventListener('click', () => {
+  feeTableMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  renderFeeTable();
+});
+
+// 캘린더와 같은 /api/admin/fee-calendar 엔드포인트를 그대로 재사용해서(OSMU) 그 달의 납부
+// 회차를 예정일순으로 표로 보여준다. 행을 클릭하면 캘린더 이벤트 클릭과 동일하게 사건상세로 이동한다.
+async function renderFeeTable() {
+  if (!feeTableMonth) feeTableMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const year = feeTableMonth.getFullYear();
+  const month = feeTableMonth.getMonth();
+  document.getElementById('fee-table-month-label').textContent = `${year}년 ${month + 1}월`;
+
+  const startStr = `${year}-${pad(month + 1)}-01`;
+  const endStr = month === 11 ? `${year + 1}-01-01` : `${year}-${pad(month + 2)}-01`;
+
+  const tbody = document.getElementById('fee-table-tbody');
+  const emptyNote = document.getElementById('fee-table-empty-note');
+  emptyNote.classList.add('hidden');
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px 0;">불러오는 중...</td></tr>';
+  try {
+    const rows = await api(`/api/admin/fee-calendar?start=${encodeURIComponent(startStr)}&end=${encodeURIComponent(endStr)}`);
+    if (!rows.length) {
+      tbody.innerHTML = '';
+      emptyNote.classList.remove('hidden');
+      return;
+    }
+    const todayStr = dateOnly(new Date());
+    tbody.innerHTML = rows.map((r) => {
+      const dDay = daysBetween(todayStr, r.due_date.slice(0, 10));
+      const color = installmentColor(r, dDay);
+      const statusLabel = r.status === '완료' ? '완료' : (dDay < 0 ? '기한초과' : (dDay === 0 ? '오늘마감' : (dDay <= 3 ? `D-${dDay}` : '예정')));
+      return `
+      <tr data-case-id="${r.case_id}">
+        <td>${escapeHtml(r.due_date.slice(0, 10))}</td>
+        <td>${escapeHtml(r.client_name || '-')}</td>
+        <td>${r.seq}회차</td>
+        <td>${won(r.amount)}</td>
+        <td><span class="fee-table-status" style="background:${color}">${statusLabel}</span></td>
+      </tr>`;
+    }).join('');
+    tbody.querySelectorAll('tr[data-case-id]').forEach((tr) => {
+      tr.addEventListener('click', () => {
+        window.location.href = `/case-detail.html?id=${tr.dataset.caseId}&from=fee-calendar`;
+      });
+    });
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" class="error-text">${escapeHtml(err.message)}</td></tr>`;
+  }
 }
 
 async function loadPeriodSummary() {
@@ -822,7 +939,8 @@ document.getElementById('btn-confirm-matches').addEventListener('click', async (
     const result = await api('/api/admin/fee-calendar/confirm-matches', { method: 'POST', body: JSON.stringify({ matches }) });
     alert(`${result.confirmed}건을 완료 처리했습니다.${result.skipped.length ? ` (이미 처리돼있던 ${result.skipped.length}건은 건너뜀)` : ''}`);
     document.getElementById('import-modal').classList.add('hidden');
-    calendar.refetchEvents();
+    if (calendar) calendar.refetchEvents();
+    if (feeCalViewMode === 'table') renderFeeTable();
     loadPeriodSummary();
     loadOverdueSummary();
   } catch (err) {
@@ -852,7 +970,8 @@ async function init() {
   if (!hasTab(currentUser, 'consultations')) document.getElementById('nav-consultations').style.display = 'none';
   if (!hasTab(currentUser, 'clients')) document.getElementById('nav-clients').style.display = 'none';
 
-  setupCalendar();
+  if (feeCalViewMode === 'calendar') setupCalendar();
+  else renderFeeTable();
   loadPeriodSummary();
   loadOverdueSummary();
 }

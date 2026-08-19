@@ -137,6 +137,27 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
 .fee-summary .item { font-size: 13px; color: var(--text-secondary); }
 .fee-summary .item b { display: block; font-size: 18px; color: var(--text-primary); }
 
+.fee-view-toggle { display: flex; gap: 6px; margin: 4px 0 12px; }
+.fee-view-btn {
+  font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--gridline); background: var(--card-surface); color: var(--text-secondary);
+}
+.fee-view-btn:hover { background: #eef1f6; }
+.fee-view-btn.active { background: var(--brand-coral); border-color: var(--brand-coral); color: white; }
+
+.fee-cal-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.fee-cal-month-label { font-size: 14px; font-weight: 700; color: var(--text-primary); min-width: 84px; text-align: center; }
+.fee-cal-weekdays, .fee-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.fee-cal-weekdays { font-size: 11px; color: var(--text-muted); text-align: center; margin-bottom: 4px; }
+.fee-cal-cell { min-height: 62px; border: 1px solid var(--gridline); border-radius: 6px; padding: 4px; background: var(--surface-1); }
+.fee-cal-cell.empty { border: none; background: transparent; }
+.fee-cal-cell.today { border-color: var(--brand-coral); border-width: 2px; }
+.fee-cal-daynum { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+.fee-cal-badge {
+  color: white; border-radius: 4px; padding: 1px 5px; margin-bottom: 2px; font-size: 10px; font-weight: 600;
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 @media (max-width: 640px) {
   .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
   .topbar-left h1 { font-size: 16px; }
@@ -145,6 +166,8 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
   button.btn-secondary, a.btn-secondary { padding: 7px 10px; font-size: 12px; }
   main { padding: 12px; }
   .row { flex-direction: column; gap: 0; }
+  .fee-cal-cell { min-height: 46px; padding: 2px; }
+  .fee-cal-badge { font-size: 9px; padding: 0 3px; }
 }
 </style>
 </head>
@@ -414,11 +437,31 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
           <div class="item">미납액<b id="fee-sum-remaining" style="color:var(--status-critical);">-</b></div>
         </div>
 
-        <table class="fee-table">
-          <thead><tr><th>회차</th><th>금액</th><th>납부예정일</th><th>상태</th><th>납부일</th><th>결제방식</th><th>입금자명</th><th></th></tr></thead>
-          <tbody id="fee-tbody"></tbody>
-        </table>
-        <p id="fee-empty-note" class="empty-note hidden">등록된 납부 회차가 없습니다.</p>
+        <div class="fee-view-toggle">
+          <button type="button" class="fee-view-btn active" id="fee-view-table-btn">테이블</button>
+          <button type="button" class="fee-view-btn" id="fee-view-calendar-btn">캘린더</button>
+        </div>
+
+        <div id="fee-table-view">
+          <table class="fee-table">
+            <thead><tr><th>회차</th><th>금액</th><th>납부예정일</th><th>상태</th><th>납부일</th><th>결제방식</th><th>입금자명</th><th></th></tr></thead>
+            <tbody id="fee-tbody"></tbody>
+          </table>
+          <p id="fee-empty-note" class="empty-note hidden">등록된 납부 회차가 없습니다.</p>
+        </div>
+
+        <div id="fee-calendar-view" class="hidden">
+          <div class="fee-cal-header">
+            <button type="button" class="btn-small" id="fee-cal-prev">◀</button>
+            <span class="fee-cal-month-label" id="fee-calendar-month-label"></span>
+            <button type="button" class="btn-small" id="fee-cal-next">▶</button>
+            <button type="button" class="btn-small" id="fee-cal-today">오늘</button>
+          </div>
+          <div class="fee-cal-weekdays">
+            <div>일</div><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div>토</div>
+          </div>
+          <div class="fee-cal-grid" id="fee-calendar-grid"></div>
+        </div>
 
         <div class="mini-form" id="fee-mini-form-wrap">
           <div class="mini-form-title" id="fee-form-title">새 회차 추가</div>
@@ -486,6 +529,9 @@ let currentUser = null;
 let currentCase = null;
 let employeeList = [];
 let sheetsStatus = { tasksManagedInSheet: false, url: null };
+let feeViewMode = 'table';
+let feeCalendarMonth = null; // Date(그 달의 1일) - 처음 캘린더를 열 때 오늘 기준으로 초기화된다
+let currentFeeInstallments = [];
 const caseId = new URLSearchParams(window.location.search).get('id');
 
 // 어느 목록 화면에서 들어왔는지에 따라 "뒤로가기" 링크를 그 화면으로 되돌려준다
@@ -532,6 +578,25 @@ function escapeHTML(s) {
 
 function formatWon(n) {
   return `${Number(n || 0).toLocaleString('ko-KR')}원`;
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+function daysBetween(aStr, bStr) {
+  const a = new Date(aStr + 'T00:00:00Z');
+  const b = new Date(bStr + 'T00:00:00Z');
+  return Math.round((b - a) / 86400000);
+}
+
+// 납부회차 하나의 캘린더 표시 색상 - 수임료 캘린더(fee-calendar.html)의 installmentColor()와
+// 동일한 신호색 로직이다(완료는 항상 초록, 예정은 마감까지 남은 기간에 따라 노랑/빨강/파랑).
+function installmentColor(inst, dDay) {
+  if (inst.status === '완료') return 'var(--status-good)';
+  if (dDay <= 0) return 'var(--status-critical)';
+  if (dDay <= 3) return 'var(--status-warning)';
+  return '#2563eb';
 }
 
 /* ---- 날짜칸: 브라우저/OS 로케일에 상관없이 항상 yyyy-mm-dd로 고정 ---- */
@@ -971,6 +1036,7 @@ document.getElementById('fee-status').addEventListener('change', (e) => {
 
 async function renderFeeSection() {
   const fee = await api(`/api/cases/${caseId}/fee`);
+  currentFeeInstallments = fee.installments;
   setMoneyValue(document.getElementById('fee-total'), fee.total_amount);
   document.getElementById('fee-memo').value = fee.memo || '';
 
@@ -1004,6 +1070,78 @@ async function renderFeeSection() {
       });
     });
   }
+
+  if (feeViewMode === 'calendar') renderFeeCalendarGrid();
+}
+
+// "테이블"/"캘린더" 두 형식 중 하나를 고른다. 데이터는 이미 renderFeeSection()에서 한 번만
+// 받아온 currentFeeInstallments를 그대로 쓰고(OSMU - 형식을 바꿀 때마다 다시 조회하지 않는다),
+// 캘린더 쪽만 처음 열 때 달을 오늘 기준으로 잡아준다.
+function setFeeViewMode(mode) {
+  feeViewMode = mode;
+  document.getElementById('fee-view-table-btn').classList.toggle('active', mode === 'table');
+  document.getElementById('fee-view-calendar-btn').classList.toggle('active', mode === 'calendar');
+  document.getElementById('fee-table-view').classList.toggle('hidden', mode !== 'table');
+  document.getElementById('fee-calendar-view').classList.toggle('hidden', mode !== 'calendar');
+  if (mode === 'calendar') {
+    if (!feeCalendarMonth) feeCalendarMonth = new Date();
+    renderFeeCalendarGrid();
+  }
+}
+
+document.getElementById('fee-view-table-btn').addEventListener('click', () => setFeeViewMode('table'));
+document.getElementById('fee-view-calendar-btn').addEventListener('click', () => setFeeViewMode('calendar'));
+
+function changeFeeMonth(delta) {
+  if (!feeCalendarMonth) feeCalendarMonth = new Date();
+  feeCalendarMonth = new Date(feeCalendarMonth.getFullYear(), feeCalendarMonth.getMonth() + delta, 1);
+  renderFeeCalendarGrid();
+}
+
+document.getElementById('fee-cal-prev').addEventListener('click', () => changeFeeMonth(-1));
+document.getElementById('fee-cal-next').addEventListener('click', () => changeFeeMonth(1));
+document.getElementById('fee-cal-today').addEventListener('click', () => {
+  feeCalendarMonth = new Date();
+  renderFeeCalendarGrid();
+});
+
+// 한 달치 그리드를 그린다. 회차가 여러 개 같은 날짜에 몰려도 각자 배지로 쌓아서 보여주고,
+// 배지를 누르면 테이블 편집과 똑같이 loadFeeIntoForm()으로 그 회차를 편집창에 띄운다.
+function renderFeeCalendarGrid() {
+  if (!feeCalendarMonth) feeCalendarMonth = new Date();
+  const year = feeCalendarMonth.getFullYear();
+  const month = feeCalendarMonth.getMonth();
+  document.getElementById('fee-calendar-month-label').textContent = `${year}년 ${month + 1}월`;
+
+  const startWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayStr = `${new Date().getFullYear()}-${pad2(new Date().getMonth() + 1)}-${pad2(new Date().getDate())}`;
+
+  const byDate = {};
+  currentFeeInstallments.forEach((inst) => {
+    const d = (inst.due_date || '').slice(0, 10);
+    if (!d) return;
+    (byDate[d] = byDate[d] || []).push(inst);
+  });
+
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push('<div class="fee-cal-cell empty"></div>');
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${year}-${pad2(month + 1)}-${pad2(day)}`;
+    const items = byDate[dateStr] || [];
+    const dDay = daysBetween(todayStr, dateStr);
+    const badges = items.map((inst) => `<div class="fee-cal-badge" style="background:${installmentColor(inst, dDay)}" data-fee-cal-id="${inst.id}" title="${escapeHTML(String(inst.seq))}회차 ${escapeHTML(formatWon(inst.amount))}">${escapeHTML(String(inst.seq))}회차 ${escapeHTML(formatWon(inst.amount))}</div>`).join('');
+    cells.push(`<div class="fee-cal-cell${dateStr === todayStr ? ' today' : ''}"><div class="fee-cal-daynum">${day}</div>${badges}</div>`);
+  }
+
+  const grid = document.getElementById('fee-calendar-grid');
+  grid.innerHTML = cells.join('');
+  grid.querySelectorAll('[data-fee-cal-id]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const item = currentFeeInstallments.find((i) => String(i.id) === el.dataset.feeCalId);
+      if (item) loadFeeIntoForm(item);
+    });
+  });
 }
 
 function loadFeeIntoForm(item) {

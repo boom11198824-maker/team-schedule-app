@@ -388,7 +388,7 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
         </div>
       </div>
 
-      <!-- 수임료 납부일정 (관리자 전용) -->
+      <!-- 수임료 납부일정 (관리자 + 'fee' 탭 권한이 있는 직원) -->
       <div class="card" id="fee-card" style="display:none;">
         <h3>수임료 납부일정</h3>
 
@@ -513,6 +513,17 @@ async function api(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || '요청에 실패했습니다.');
   return data;
+}
+
+// 탭별 접근권한 체크. 관리자는 항상 true. allowed_tabs가 null/undefined(미설정)이면
+// 기존 직원 계정과 동일하게 전체 허용 — 이 기능이 추가되기 전 계정의 접근 범위가
+// 갑자기 좁아지지 않도록 하기 위함이다. (app.html/fee-calendar.html과 동일한 로직 - server.js의
+// hasTabAccess()가 원본이다.)
+function hasTab(user, tab) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (user.allowed_tabs === null || user.allowed_tabs === undefined) return true;
+  return String(user.allowed_tabs).split(',').map((s) => s.trim()).filter(Boolean).includes(tab);
 }
 
 function escapeHTML(s) {
@@ -1089,6 +1100,8 @@ async function init() {
   document.getElementById('user-name').textContent = `${currentUser.name} 님`;
   if (currentUser.role === 'admin') {
     document.getElementById('nav-settings').style.display = 'inline-block';
+  }
+  if (hasTab(currentUser, 'fee')) {
     document.getElementById('nav-fee-calendar').style.display = 'inline-block';
   }
 
@@ -1117,7 +1130,7 @@ async function init() {
   resetTaskForm();
 
   const tasks = [renderTaskTable(), renderFiles()];
-  if (currentUser.role === 'admin') {
+  if (hasTab(currentUser, 'fee')) {
     document.getElementById('fee-card').style.display = '';
     resetFeeForm();
     tasks.push(renderFeeSection());

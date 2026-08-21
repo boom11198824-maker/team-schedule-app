@@ -492,6 +492,17 @@ function requireTab(tab) {
 
 const CASE_FILE_MAX_SIZE = 20 * 1024 * 1024; // 20MB
 const CASE_FILE_ALLOWED_EXT = ['.pdf', '.jpg', '.jpeg', '.png', '.doc', '.docx', '.hwp'];
+// 미리보기(inline) 응답용 MIME 타입. PDF/이미지는 브라우저가 바로 렌더링하고, doc/docx/hwp는
+// 브라우저에 뷰어가 없어 결국 다운로드로 처리되지만 Content-Type은 정확히 맞춰준다.
+const CASE_FILE_MIME = {
+  '.pdf': 'application/pdf',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.hwp': 'application/x-hwp',
+};
 
 const caseFileStorage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -1320,6 +1331,21 @@ app.get('/api/case-files/:fileId/download', requireLogin, (req, res) => {
   const filePath = path.join(UPLOADS_DIR, `case-${file.case_id}`, file.stored_name);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: '파일이 서버에 존재하지 않습니다.' });
   res.download(filePath, file.original_name);
+});
+
+// 첨부문서를 다운로드시키지 않고 새 탭/팝업에서 바로 열람할 때 쓴다 (PDF·이미지는 브라우저가
+// 자체 뷰어로 바로 렌더링 — Content-Disposition을 inline으로 주는 게 핵심이다).
+app.get('/api/case-files/:fileId/view', requireLogin, (req, res) => {
+  const file = db.prepare('SELECT * FROM case_files WHERE id = ?').get(req.params.fileId);
+  if (!file) return res.status(404).json({ error: '파일을 찾을 수 없습니다.' });
+  const filePath = path.join(UPLOADS_DIR, `case-${file.case_id}`, file.stored_name);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: '파일이 서버에 존재하지 않습니다.' });
+  const ext = path.extname(file.stored_name).toLowerCase();
+  const mime = CASE_FILE_MIME[ext] || 'application/octet-stream';
+  const safeName = (file.original_name || '').replace(/["\\\r\n]/g, '');
+  res.setHeader('Content-Type', mime);
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(safeName)}"; filename*=UTF-8''${encodeURIComponent(safeName)}`);
+  res.sendFile(filePath);
 });
 
 app.delete('/api/case-files/:fileId', requireAdmin, (req, res) => {

@@ -787,7 +787,58 @@ window.addEventListener('resize',fitPreview);
 function fileName(){const s=window.__state||readState();const cl=s.caseType==='rehab'?'개인회생':'개인파산';const nm=(s.name||'의뢰인').replace(/[\\/:*?"<>|]/g,'')+'님';return settings.fileNameFormat.replace('{date}',s.date||new Date().toISOString().slice(0,10)).replace('{name}',nm).replace('{caseType}',cl)}
 async function ready(){try{if(document.fonts&&document.fonts.ready)await document.fonts.ready}catch(e){}await new Promise(r=>setTimeout(r,60))}
 function printPDF(){var prev=document.title;try{document.title=fileName()}catch(e){}document.body.classList.add('capturing');var cleaned=false,cleanup=function(){if(cleaned)return;cleaned=true;document.body.classList.remove('capturing');document.title=prev;window.removeEventListener('afterprint',cleanup);fitPreview()};window.addEventListener('afterprint',cleanup);try{document.body.offsetHeight;window.print()}catch(e){cleanup();alert('인쇄 창을 열 수 없습니다. 키보드 Ctrl+P로 인쇄해 주세요.');return}setTimeout(cleanup,2000)}
-async function exportPDF(){var jspdfNS=window.jspdf||window.jsPDF;if(!jspdfNS||typeof html2canvas==='undefined'){printPDF();return}var btn=document.getElementById('pdfBtn');if(btn){btn.disabled=true;btn.textContent='생성 중…'}try{await ready();document.body.classList.add('capturing');await new Promise(function(r){setTimeout(r,90)});var pages=[].slice.call(document.querySelectorAll('#report-root .report-page'));if(!pages.length)throw new Error('리포트 페이지가 없습니다.');var JsPDF=(window.jspdf&&window.jspdf.jsPDF)?window.jspdf.jsPDF:window.jsPDF;var pdf=new JsPDF({unit:'mm',format:'a4',compress:true});for(var i=0;i<pages.length;i++){var cv=await html2canvas(pages[i],{scale:2,backgroundColor:'#ffffff',useCORS:true,logging:false,windowWidth:pages[i].scrollWidth});var img=cv.toDataURL('image/jpeg',0.92);var h=cv.height*210/cv.width;if(i>0)pdf.addPage();pdf.addImage(img,'JPEG',0,0,210,Math.min(h,297))}pdf.save(fileName()+'.pdf')}catch(e){alert('PDF 자동 생성 실패로 인쇄창으로 전환합니다.\n('+e.message+')');document.body.classList.remove('capturing');printPDF()}finally{document.body.classList.remove('capturing');if(btn){btn.disabled=false;btn.textContent='PDF 생성'}fitPreview()}}
+/* ---- PDF 렌더링 공통 로직 ----
+   수동 "PDF 생성" 버튼(exportPDF)과 저장 시 자동 첨부(autoUploadReportPdf)가 같은 렌더링
+   파이프라인을 공유한다(OSMU) — 화면에 저장/다운로드하지 않고 jsPDF 인스턴스만 돌려준다. */
+async function buildReportPdf(){
+  await ready();
+  document.body.classList.add('capturing');
+  try{
+    await new Promise(function(r){setTimeout(r,90)});
+    var pages=[].slice.call(document.querySelectorAll('#report-root .report-page'));
+    if(!pages.length)throw new Error('리포트 페이지가 없습니다.');
+    var JsPDF=(window.jspdf&&window.jspdf.jsPDF)?window.jspdf.jsPDF:window.jsPDF;
+    var pdf=new JsPDF({unit:'mm',format:'a4',compress:true});
+    for(var i=0;i<pages.length;i++){
+      var cv=await html2canvas(pages[i],{scale:2,backgroundColor:'#ffffff',useCORS:true,logging:false,windowWidth:pages[i].scrollWidth});
+      var img=cv.toDataURL('image/jpeg',0.92);
+      var h=cv.height*210/cv.width;
+      if(i>0)pdf.addPage();
+      pdf.addImage(img,'JPEG',0,0,210,Math.min(h,297));
+    }
+    return pdf;
+  }finally{
+    document.body.classList.remove('capturing');
+  }
+}
+async function exportPDF(){var jspdfNS=window.jspdf||window.jsPDF;if(!jspdfNS||typeof html2canvas==='undefined'){printPDF();return}var btn=document.getElementById('pdfBtn');if(btn){btn.disabled=true;btn.textContent='생성 중…'}try{var pdf=await buildReportPdf();pdf.save(fileName()+'.pdf')}catch(e){alert('PDF 자동 생성 실패로 인쇄창으로 전환합니다.\n('+e.message+')');document.body.classList.remove('capturing');printPDF()}finally{document.body.classList.remove('capturing');if(btn){btn.disabled=false;btn.textContent='PDF 생성'}fitPreview()}}
+/* ---- 상담일지 저장 시 PDF 자동생성 + 사건상세 '첨부문서'에 자동 업로드 (원스톱) ----
+   같은 상담을 다시 저장하면 이전에 자동 업로드해둔 PDF를 지우고 최신본으로 교체한다.
+   단, 첨부파일 삭제는 관리자 권한이 필요해(server.js DELETE /api/case-files/:id) 직원 계정은
+   삭제에 실패할 수 있는데, 그 경우에도 삭제 실패는 무시하고 업로드는 계속 진행한다 —
+   최소한 최신 PDF는 항상 첨부되는 게 우선이고, 예전 버전이 남아있는 건 부작용일 뿐이다. */
+const LP_PDF_MAP_KEY='beopjin_lawpilot_pdfmap';
+function lpPdfMap(){try{return JSON.parse(localStorage.getItem(LP_PDF_MAP_KEY)||'{}')}catch(e){return{}}}
+function lpSetPdfFileId(consultId,fileId){const m=lpPdfMap();m[consultId]=fileId;try{localStorage.setItem(LP_PDF_MAP_KEY,JSON.stringify(m))}catch(e){}}
+function lpGetPdfFileId(consultId){return lpPdfMap()[consultId]||null}
+async function autoUploadReportPdf(caseId,consultId){
+  var jspdfNS=window.jspdf||window.jsPDF;
+  if(!jspdfNS||typeof html2canvas==='undefined')throw new Error('PDF 라이브러리를 불러오지 못했습니다.');
+  const pdf=await buildReportPdf();
+  const blob=pdf.output('blob');
+  const oldFileId=lpGetPdfFileId(consultId);
+  if(oldFileId){
+    try{await fetch('/api/case-files/'+oldFileId,{method:'DELETE'})}catch(e){/* 권한 없거나 이미 삭제됨 - 무시 */}
+  }
+  const formData=new FormData();
+  formData.append('file',blob,fileName()+'.pdf');
+  formData.append('category','상담레포트');
+  const res=await fetch('/api/cases/'+caseId+'/files',{method:'POST',body:formData});
+  if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d.error||('HTTP '+res.status))}
+  const data=await res.json();
+  if(data.id)lpSetPdfFileId(consultId,data.id);
+  return data;
+}
 async function exportPNG(){const btn=document.getElementById('pngBtn');btn.disabled=true;btn.textContent='생성 중…';try{await ready();document.body.classList.add('capturing');await new Promise(r=>setTimeout(r,90));const pages=[].slice.call(document.querySelectorAll('#report-root .report-page'));if(!pages.length)throw new Error('리포트 페이지가 없습니다.');const scale=2,canvases=[];for(const pg of pages){canvases.push(await html2canvas(pg,{scale,backgroundColor:'#ffffff',useCORS:true,logging:false,windowWidth:pg.scrollWidth}))}const gap=16*scale,width=Math.max(...canvases.map(c=>c.width)),height=canvases.reduce((s,c)=>s+c.height,0)+gap*(canvases.length-1);const out=document.createElement('canvas');out.width=width;out.height=height;const ctx=out.getContext('2d');ctx.fillStyle='#F7F7F7';ctx.fillRect(0,0,width,height);let y=0;for(const c of canvases){ctx.drawImage(c,Math.round((width-c.width)/2),y);y+=c.height+gap}const a=document.createElement('a');a.href=out.toDataURL('image/png');a.download=fileName()+'.png';document.body.appendChild(a);a.click();a.remove()}catch(e){alert('이미지 생성 실패: '+e.message)}finally{document.body.classList.remove('capturing');btn.disabled=false;btn.textContent='이미지 발행';fitPreview()}}
 function nowStr(){const d=new Date();const p=n=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())}
 function buildSheetRow(s){const r=s.calc.rehab||{},bc=s.calc.bankruptcy||{};return {'ID':s.id,'저장일시':nowStr(),'상담일':s.date,'상담자':s.counselor,'사건종류':s.caseType==='rehab'?'개인회생':'개인파산','상담상태':s.status,'상담경로':(s.channel==='기타'?(s.channelEtc||'기타'):s.channel),'이름':s.name,'연락처':s.phone,'성별':s.gender,'출생년':s.birthYear,'만나이':s.age,'거주지역':s.region,'관할법원':s.court,'혼인여부':s.married,'가구원수':s.household,'소득형태':s.incomeType,'연봉':s.annualSalary,'월인정소득':s.recognized,'무담보원금':s.unsecPrincipal,'담보채무':s.secured,'조세채무':s.tax,'총채무액':s.totalDebt,'채권자수':s.creditors,'현재월상환액':s.currentPayment,'월상환절감액':(num(s.currentPayment)>0?clampMin(num(s.currentPayment)-(r.monthly||0)):''),'최종생계비':s.finalLiving,'월변제금':(r.monthly!=null?r.monthly:''),'변제기간':(r.months!=null?r.months:''),'총변제금':(r.totalRepay!=null?r.totalRepay:''),'변제율(%)':(r.rate!=null?r.rate:''),'탕감률(%)':(r.forgive!=null?r.forgive:''),'청산가치':(r.liq!=null?r.liq:''),'면책대상채무':(bc.dischargeable!=null?bc.dischargeable:''),'인지대':s.stampDuty,'송달료':s.feeService,'수임료':s.feeRetainer,'검토상태':s.reviewStatus,'종합의견':s.opinion}}
@@ -858,7 +909,18 @@ async function syncToLawPilot(s){
     const data=await res.json();
     const caseId=data.id||existingCaseId;
     if(caseId)lpSetCaseId(s.id,caseId);
-    lpSetBadge('✓ 상담관리에 저장됨','ok');
+    if(caseId){
+      lpSetBadge('상담관리 저장됨 · PDF 첨부 중…','muted');
+      try{
+        await autoUploadReportPdf(caseId,s.id);
+        lpSetBadge('✓ 상담관리 저장 + PDF 첨부 완료','ok');
+      }catch(pdfErr){
+        console.error('상담일지 PDF 자동첨부 실패',pdfErr);
+        lpSetBadge('✓ 상담관리에 저장됨 (PDF 첨부 실패: '+pdfErr.message+')','err');
+      }
+    }else{
+      lpSetBadge('✓ 상담관리에 저장됨','ok');
+    }
     try{if(window.opener&&!window.opener.closed)window.opener.postMessage({type:'lawpilot-consult-saved',caseId,name},window.location.origin)}catch(e){}
   }catch(e){
     console.error('LawPilot 연동 실패',e);

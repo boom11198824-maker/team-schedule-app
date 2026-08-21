@@ -129,6 +129,8 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
 .status-pill.완료 { background: var(--status-good-bg); color: var(--status-good); }
 .status-pill.연기 { background: var(--status-serious-bg); color: var(--status-serious); }
 .match-source-tag { font-size: 10px; color: var(--text-muted); margin-left: 4px; white-space: nowrap; }
+.file-link { color: var(--brand-navy); text-decoration: none; }
+.file-link:hover { text-decoration: underline; }
 
 .mini-form { background: #f7f8fa; border: 1px solid var(--gridline); border-radius: 10px; padding: 12px; margin-top: 12px; }
 .mini-form-title { font-size: 12px; font-weight: 700; color: var(--text-secondary); margin-bottom: 6px; }
@@ -779,7 +781,7 @@ function fileRowHTML(f) {
   return `
     <tr>
       <td>${escapeHTML(f.category || '기타')}</td>
-      <td>${escapeHTML(f.original_name)}</td>
+      <td><a class="file-link" href="/api/case-files/${f.id}/view" target="_blank" rel="noopener">${escapeHTML(f.original_name)}</a></td>
       <td class="muted">${escapeHTML(uploadedDate)}</td>
       <td>
         <a class="btn-small" href="/api/case-files/${f.id}/download" target="_blank" rel="noopener" style="text-decoration:none; display:inline-block;">다운로드</a>

@@ -2,11 +2,10 @@ name: Daily Kakao Schedule Notify
 
 on:
   schedule:
-    # 매일 08:35(KST) 발송 목표 - KST는 UTC+9라 23:35 UTC로 지정한다.
-    # 원래 '0 0 * * *'(자정 UTC = 오전 9시 KST)였는데, 정각(00분)은 전 세계에서 가장 많이
-    # 몰리는 GitHub Actions 스케줄 슬롯이라 큐가 밀려 실제로는 3시간 넘게 늦게(점심때) 실행됐다.
-    # 정시가 아닌 분(35분)으로 옮겨서 혼잡을 피하고, 목표 시각도 살짝 앞당겨 여유를 둔다.
-    - cron: '35 23 * * *'
+    # 매일 09:30(KST) 발송 - KST는 UTC+9라 00:30 UTC로 지정한다.
+    # 정각(00분)에 걸치지 않는 시각이라 GitHub Actions 스케줄 혼잡(정각에 전 세계 요청이 몰려
+    # 큐가 밀리는 문제)도 함께 피한다.
+    - cron: '30 0 * * *'
   workflow_dispatch: {}
 
 jobs:

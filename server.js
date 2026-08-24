@@ -17,6 +17,7 @@ const fs = require('fs');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const crypto = require('crypto');
+const webpush = require('web-push');
 
 /* ------------------------------------------------------------------ */
 /* 데이터베이스                                                        */
@@ -224,7 +225,7 @@ for (const col of [
   'seal_received INTEGER NOT NULL DEFAULT 0', 'seal_received_date TEXT',
   'cert_usb_received INTEGER NOT NULL DEFAULT 0', 'cert_usb_received_date TEXT',
   'updated_at TEXT', 'retainer_date TEXT', 'region TEXT', 'client_rank INTEGER',
-  'consult_date TEXT',
+  'consult_date TEXT', 'consult_report_json TEXT',
 ]) {
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
@@ -418,6 +419,23 @@ db.prepare(
 function getAppSettings() {
   return db.prepare('SELECT * FROM app_settings WHERE id = 1').get();
 }
+
+// 웹 푸시 알림 구독 정보. 카카오톡("나에게 보내기")과 달리 브라우저/기기별로 구독이 따로 생기므로
+// (같은 직원이 폰+PC를 다 켜두면 둘 다 별도 구독), employee_id 하나에 여러 행이 붙을 수 있다.
+// endpoint는 브라우저가 구독마다 발급하는 고유 주소라 UNIQUE로 중복 구독을 막는다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (employee_id) REFERENCES employees(id)
+);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_employee ON push_subscriptions(employee_id);
+`);
 
 /* ------------------------------------------------------------------ */
 /* 인증 / 권한                                                         */
@@ -1244,15 +1262,16 @@ app.get('/api/cases/:id', requireLogin, (req, res) => {
 });
 
 app.post('/api/cases', requireLogin, (req, res) => {
-  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status, region } = req.body || {};
+  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status, region, consult_report_json } = req.body || {};
   if (!client_name) return res.status(400).json({ error: '의뢰인명은 필수입니다.' });
 
   const info = db
-    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status, region, created_by, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status, region, consult_report_json, created_by, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
     .run(
       client_name, phone || '', court || '', court_case_no || '', assignee_name || '', memo || '',
-      case_type || '', intake_date || '', consult_date || '', assigned_lawyer || '', current_stage || '', status || '', region || '', req.user.id
+      case_type || '', intake_date || '', consult_date || '', assigned_lawyer || '', current_stage || '', status || '', region || '',
+      consult_report_json || null, req.user.id
     );
 
   res.status(201).json(db.prepare('SELECT * FROM cases WHERE id = ?').get(info.lastInsertRowid));
@@ -1264,7 +1283,7 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
 
   const {
     client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status,
-    seal_received, seal_received_date, cert_usb_received, cert_usb_received_date, region,
+    seal_received, seal_received_date, cert_usb_received, cert_usb_received_date, region, consult_report_json,
   } = req.body || {};
   const updated = {
     client_name: client_name ?? existing.client_name,
@@ -1284,14 +1303,15 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
     cert_usb_received: cert_usb_received !== undefined ? (cert_usb_received ? 1 : 0) : existing.cert_usb_received,
     cert_usb_received_date: cert_usb_received_date ?? existing.cert_usb_received_date,
     region: region ?? existing.region,
+    consult_report_json: consult_report_json ?? existing.consult_report_json,
   };
   db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, consult_date=?, assigned_lawyer=?, current_stage=?, status=?,
-              seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=?, region=?, updated_at=datetime('now') WHERE id = ?`)
+              seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=?, region=?, consult_report_json=?, updated_at=datetime('now') WHERE id = ?`)
     .run(
       updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo,
       updated.case_type, updated.intake_date, updated.consult_date, updated.assigned_lawyer, updated.current_stage, updated.status,
       updated.seal_received, updated.seal_received_date, updated.cert_usb_received, updated.cert_usb_received_date,
-      updated.region,
+      updated.region, updated.consult_report_json,
       existing.id
     );
 
@@ -3225,13 +3245,21 @@ async function sendDailyKakaoNotifications() {
 // 메모 저장 즉시 알림(카톡): 일일 알림(sendDailyKakaoNotifications)과 같은 방식으로 등록된 모든
 // 수신자(내업무폰/직원업무폰)에게 각자의 토큰으로 개별 발송한다(OSMU) - 다만 이건 매일이 아니라
 // 메모가 남을 때마다 즉시 트리거된다. 한 명이라도 발송이 실패해도 나머지 수신자에게는 계속 보낸다.
+// 카카오와 별개로, 로그인해서 "알림 켜기"를 누른 직원의 기기에는 웹 푸시로도 함께 보낸다(OSMU) -
+// 카카오 계정 연동 없이도 직원 수만큼 자연히 늘어나는 채널이라 카카오를 대체하지 않고 병행한다.
 async function notifyCaseNoteAdded(caseRow, note) {
+  const preview = note.content.length > 200 ? note.content.slice(0, 200) + '…' : note.content;
+  const message = `📝 메모 등록 알림\n\n${caseRow.client_name}님 사건에 메모가 남겨졌습니다.\n작성자: ${note.author_name || ''}\n\n${preview}`;
+
+  sendPushToAll({
+    title: `${caseRow.client_name}님 사건에 메모가 남겨졌습니다`,
+    body: preview,
+    url: `/case-detail.html?id=${caseRow.id}`,
+  }).catch((err) => console.error('[push] 메모 알림 발송 실패:', err.message));
+
   if (!process.env.KAKAO_REST_API_KEY || !process.env.KAKAO_CLIENT_SECRET) return;
   const recipients = db.prepare('SELECT * FROM kakao_recipients WHERE enabled = 1').all();
   if (!recipients.length) return;
-
-  const preview = note.content.length > 200 ? note.content.slice(0, 200) + '…' : note.content;
-  const message = `📝 메모 등록 알림\n\n${caseRow.client_name}님 사건에 메모가 남겨졌습니다.\n작성자: ${note.author_name || ''}\n\n${preview}`;
 
   for (const r of recipients) {
     try {
@@ -3326,6 +3354,73 @@ app.delete('/api/kakao/recipients/:label', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM kakao_recipients WHERE label = ?').run(req.params.label);
   res.json({ ok: true });
 });
+
+/* ------------------------------------------------------------------ */
+/* 웹 푸시 알림                                                        */
+/* ------------------------------------------------------------------ */
+// 카카오톡 "나에게 보내기"는 사전에 등록해둔 고정 2개 계정(내업무폰/직원업무폰)에만 보낼 수 있는데,
+// 웹 푸시는 로그인한 직원이 각자 자기 기기(폰 브라우저 등)에서 "알림 켜기"만 누르면 그 기기로 바로
+// 알림이 온다 - 카카오 계정 연동 없이 직원 수만큼 자연히 채널이 늘어난다. VAPID_PUBLIC_KEY /
+// VAPID_PRIVATE_KEY 환경변수가 없으면 카카오와 동일하게 조용히 아무 것도 보내지 않는다(no-op).
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || 'mailto:admin@beopjin.local',
+    VAPID_PUBLIC_KEY,
+    VAPID_PRIVATE_KEY
+  );
+}
+
+app.get('/api/push/vapid-public-key', requireLogin, (req, res) => {
+  res.json({ publicKey: VAPID_PUBLIC_KEY || null });
+});
+
+app.get('/api/push/status', requireLogin, (req, res) => {
+  const count = db.prepare('SELECT COUNT(*) AS c FROM push_subscriptions WHERE employee_id = ?').get(req.user.id).c;
+  res.json({ subscribed: count > 0, configured: !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) });
+});
+
+app.post('/api/push/subscribe', requireLogin, (req, res) => {
+  const sub = (req.body && req.body.subscription) || req.body || {};
+  if (!sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+    return res.status(400).json({ error: '유효하지 않은 구독 정보입니다.' });
+  }
+  db.prepare(`
+    INSERT INTO push_subscriptions (employee_id, endpoint, p256dh, auth, user_agent)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(endpoint) DO UPDATE SET
+      employee_id = excluded.employee_id, p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent
+  `).run(req.user.id, sub.endpoint, sub.keys.p256dh, sub.keys.auth, (req.get('User-Agent') || '').slice(0, 300));
+  res.status(201).json({ ok: true });
+});
+
+app.post('/api/push/unsubscribe', requireLogin, (req, res) => {
+  const endpoint = req.body && req.body.endpoint;
+  if (!endpoint) return res.status(400).json({ error: 'endpoint가 필요합니다.' });
+  db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND employee_id = ?').run(endpoint, req.user.id);
+  res.json({ ok: true });
+});
+
+// 등록된 모든 구독(=알림을 켠 모든 직원의 모든 기기)에 보낸다. 카카오와 마찬가지로 한 기기 발송
+// 실패가 다른 기기 발송을 막지 않는다. 브라우저가 구독을 스스로 취소/만료시킨 경우(410/404)는
+// 다음부터 조용히 제외되도록 그 구독을 정리한다.
+async function sendPushToAll(payload) {
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return;
+  const subs = db.prepare('SELECT * FROM push_subscriptions').all();
+  const body = JSON.stringify(payload);
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body);
+    } catch (err) {
+      if (err.statusCode === 404 || err.statusCode === 410) {
+        db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(sub.id);
+      } else {
+        console.error('[push] 발송 실패:', err.message);
+      }
+    }
+  }
+}
 
 /* ---- 정적 페이지 ---- */
 

@@ -398,7 +398,7 @@ function rowHTML(c) {
       <td class="name-cell">${escapeHTML(c.client_name)}</td>
       <td class="muted">${escapeHTML(c.phone || '-')}</td>
       <td class="muted">${escapeHTML(c.assignee_name || '-')}</td>
-      <td class="muted">${escapeHTML(c.intake_date || '-')}</td>
+      <td class="muted">${escapeHTML(c.consult_date || '-')}</td>
       <td><span class="status-pill ${escapeHTML(statusLabel)}">${escapeHTML(statusLabel)}</span></td>
       <td class="memo-cell ${memoText ? '' : 'empty'}" data-memo-id="${c.id}">${memoText}</td>
     </tr>`;
@@ -417,13 +417,16 @@ function render() {
   if (q) {
     filtered = filtered.filter((c) => (c.client_name || '').toLowerCase().includes(q));
   }
-  // 등록일(id) 기준이 아니라 최근 변경일(updated_at) 기준으로 정렬한다 - 의뢰인목록(/api/clients)과
-  // 같은 방식(OSMU). 접수 처리 등으로 상태가 바뀐 순간 updated_at이 갱신되므로(서버 PATCH에서 자동
-  // 처리) 오래 전에 등록된 상담이라도 방금 접수 처리했다면 다시 목록 위로 올라온다.
+  // updated_at(최근 변경일) 기준 정렬은 메모/상태 등 아무 필드나 수정될 때마다 그 사건이 목록
+  // 맨 위로 튀어올라 "상담일" 표시 순서와 어긋나 보이는(뒤죽박죽) 문제가 있었다. 대신 client_rank -
+  // 의뢰인목록(/api/clients)이 이미 쓰고 있는, 한 번 정해지면 어떤 수정에도 흔들리지 않는 고정
+  // 정렬키 - 를 그대로 재사용한다(OSMU). client_rank가 없는(드문) 사건은 맨 뒤로 보낸다.
   filtered = filtered.slice().sort((a, b) => {
-    const av = a.updated_at || a.created_at || '';
-    const bv = b.updated_at || b.created_at || '';
-    return bv.localeCompare(av) || (b.id - a.id);
+    const arank = a.client_rank, brank = b.client_rank;
+    if (arank == null && brank == null) return b.id - a.id;
+    if (arank == null) return 1;
+    if (brank == null) return -1;
+    return brank - arank;
   });
 
   document.getElementById('list-count').textContent = `${filtered.length}건`;
@@ -502,7 +505,7 @@ document.getElementById('btn-save-new').addEventListener('click', async () => {
     phone: document.getElementById('nc-phone').value.trim(),
     assignee_name: appSettings.default_assignee_name || '',
     assigned_lawyer: appSettings.default_lawyer_name || '',
-    intake_date: date,
+    consult_date: date,
     memo: document.getElementById('nc-memo').value.trim(),
     status: '상담중',
   };

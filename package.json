@@ -19,6 +19,7 @@
     "express-session": "^1.19.0",
     "googleapis": "^173.0.0",
     "multer": "^2.2.0",
+    "web-push": "^3.6.7",
     "xlsx": "^0.18.5"
   }
 }

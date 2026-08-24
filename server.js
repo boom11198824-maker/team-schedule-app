@@ -2186,7 +2186,7 @@ app.post('/api/case-notes', requireLogin, (req, res) => {
   const { case_id, content } = req.body || {};
   if (!case_id || !content || !content.trim()) return res.status(400).json({ error: '사건과 메모 내용은 필수입니다.' });
 
-  const caseRow = db.prepare('SELECT id FROM cases WHERE id = ?').get(case_id);
+  const caseRow = db.prepare('SELECT id, client_name FROM cases WHERE id = ?').get(case_id);
   if (!caseRow) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
 
   const info = db
@@ -2197,6 +2197,9 @@ app.post('/api/case-notes', requireLogin, (req, res) => {
               LEFT JOIN employees e ON e.id = n.created_by WHERE n.id = ?`)
     .get(info.lastInsertRowid);
   res.status(201).json(note);
+
+  // 메모 저장 알림(카톡): 응답은 이미 보냈으니 발송 실패가 메모 저장 자체를 막지 않는다 (fire-and-forget).
+  notifyCaseNoteAdded(caseRow, note).catch((err) => console.error('[kakao] 메모 알림 발송 실패:', err.message));
 });
 
 app.patch('/api/case-tasks/:id', requireLogin, async (req, res) => {
@@ -3217,6 +3220,28 @@ async function sendDailyKakaoNotifications() {
     }
   }
   return { message: baseMessage, recipientCount: recipients.length, results };
+}
+
+// 메모 저장 즉시 알림(카톡): 일일 알림(sendDailyKakaoNotifications)과 같은 방식으로 등록된 모든
+// 수신자(내업무폰/직원업무폰)에게 각자의 토큰으로 개별 발송한다(OSMU) - 다만 이건 매일이 아니라
+// 메모가 남을 때마다 즉시 트리거된다. 한 명이라도 발송이 실패해도 나머지 수신자에게는 계속 보낸다.
+async function notifyCaseNoteAdded(caseRow, note) {
+  if (!process.env.KAKAO_REST_API_KEY || !process.env.KAKAO_CLIENT_SECRET) return;
+  const recipients = db.prepare('SELECT * FROM kakao_recipients WHERE enabled = 1').all();
+  if (!recipients.length) return;
+
+  const preview = note.content.length > 200 ? note.content.slice(0, 200) + '…' : note.content;
+  const message = `📝 메모 등록 알림\n\n${caseRow.client_name}님 사건에 메모가 남겨졌습니다.\n작성자: ${note.author_name || ''}\n\n${preview}`;
+
+  for (const r of recipients) {
+    try {
+      const tokenRes = await refreshKakaoAccessToken(r.refresh_token);
+      updateKakaoRecipientRefreshTokenIfPresent(r.label, tokenRes);
+      await sendKakaoMemo(tokenRes.access_token, message);
+    } catch (err) {
+      console.error(`[kakao] ${r.label} 메모 알림 발송 실패:`, err.message);
+    }
+  }
 }
 
 // 최초 1회용 수신자 등록. label(예: 내업무폰/직원업무폰)이 등록될 폰 브라우저에서 직접 열어서 사용한다.

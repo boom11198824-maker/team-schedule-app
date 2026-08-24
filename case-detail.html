@@ -221,6 +221,16 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
           </div>
           <div class="row">
             <div>
+              <label>상담일</label>
+              <input type="text" class="date-field" id="f-consult-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+            </div>
+            <div>
+              <label>접수일</label>
+              <input type="text" class="date-field" id="f-intake-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+            </div>
+          </div>
+          <div class="row">
+            <div>
               <label>사건유형</label>
               <input type="text" id="f-case-type" list="case-type-options" placeholder="예: 개인회생" />
               <datalist id="case-type-options">
@@ -230,10 +240,6 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
                 <option value="법인파산"></option>
                 <option value="기타"></option>
               </datalist>
-            </div>
-            <div>
-              <label>접수일</label>
-              <input type="text" class="date-field" id="f-intake-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
             </div>
           </div>
           <div class="row">
@@ -706,6 +712,7 @@ function fillInfoForm(c) {
   document.getElementById('f-client').value = c.client_name || '';
   document.getElementById('f-phone').value = c.phone || '';
   document.getElementById('f-case-type').value = c.case_type || '';
+  document.getElementById('f-consult-date').value = c.consult_date || '';
   document.getElementById('f-intake-date').value = c.intake_date || '';
   document.getElementById('f-assignee').value = c.assignee_name || '';
   document.getElementById('f-lawyer').value = c.assigned_lawyer || '';
@@ -853,6 +860,7 @@ document.getElementById('info-form').addEventListener('submit', async (e) => {
     client_name: document.getElementById('f-client').value.trim(),
     phone: document.getElementById('f-phone').value.trim(),
     case_type: document.getElementById('f-case-type').value.trim(),
+    consult_date: document.getElementById('f-consult-date').value,
     intake_date: document.getElementById('f-intake-date').value,
     assignee_name: document.getElementById('f-assignee').value.trim(),
     assigned_lawyer: document.getElementById('f-lawyer').value.trim(),

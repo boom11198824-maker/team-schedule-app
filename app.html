@@ -217,6 +217,7 @@ button.btn-danger:hover { background: #f7d0d0; }
       <a href="/settings.html" id="nav-settings" class="btn-secondary" style="text-decoration:none; display:none;">⚙️ 설정</a>
       <button id="btn-employees" class="btn-secondary" style="display:none">직원 관리</button>
       <button id="btn-today-pip" class="btn-secondary">📌 오늘 할일</button>
+      <button id="btn-push-toggle" class="btn-secondary">🔕 알림 켜기</button>
       <button id="btn-google" class="btn-secondary">구글 캘린더 연동</button>
       <span id="user-name" class="user-name"></span>
       <button id="btn-logout" class="btn-secondary">로그아웃</button>
@@ -1279,8 +1280,77 @@ document.getElementById('btn-logout').addEventListener('click', async () => {
   window.location.href = '/';
 });
 
+/* ---- 웹 푸시 알림 ("알림 켜기" 버튼) ----
+ * 카카오톡 "나에게 보내기"는 미리 등록해둔 고정 2개 계정에만 갈 수 있는데, 여기는 로그인한
+ * 직원이 각자 자기 기기에서 버튼 한 번만 누르면 그 기기로 바로 알림이 온다. 아이폰(사파리)은
+ * "홈 화면에 추가"로 설치해야만 푸시를 받을 수 있다는 iOS 자체 제약이 있어, 안 되는 상황이면
+ * 버튼을 누를 때 그 사실을 안내한다. */
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+async function refreshPushButton() {
+  const btn = document.getElementById('btn-push-toggle');
+  if (!btn || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    btn.textContent = sub ? '🔔 알림 켜짐' : '🔕 알림 켜기';
+  } catch (err) { /* 무시 - 버튼 라벨은 다음 기회에 다시 갱신됨 */ }
+}
+
+async function togglePush() {
+  const btn = document.getElementById('btn-push-toggle');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    alert('이 브라우저에서는 알림을 지원하지 않습니다.\n\n아이폰(사파리)은 이 페이지를 "홈 화면에 추가"로 설치한 뒤에만 알림을 받을 수 있습니다. 그냥 사파리 탭으로 열어둔 상태로는 알림이 오지 않습니다.');
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const existing = await reg.pushManager.getSubscription();
+    if (existing) {
+      await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: existing.endpoint }) });
+      await existing.unsubscribe();
+      await refreshPushButton();
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      alert('알림 권한이 거부되었습니다. 브라우저 설정에서 이 사이트의 알림 권한을 허용한 뒤 다시 시도해주세요.');
+      return;
+    }
+    const { publicKey } = await api('/api/push/vapid-public-key');
+    if (!publicKey) {
+      alert('서버에 아직 푸시 알림 키가 설정되지 않았습니다. 관리자에게 문의해주세요.');
+      return;
+    }
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
+    });
+    await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub }) });
+    await refreshPushButton();
+  } catch (err) {
+    alert('알림 설정에 실패했습니다: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('btn-push-toggle').addEventListener('click', togglePush);
+
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').then(() => refreshPushButton()).catch(() => {});
+  });
+} else {
+  document.getElementById('btn-push-toggle').style.display = 'none';
 }
 
 init();

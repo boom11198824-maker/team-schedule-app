@@ -116,6 +116,21 @@ CREATE INDEX IF NOT EXISTS idx_case_tasks_case_id ON case_tasks(case_id);
 CREATE INDEX IF NOT EXISTS idx_case_tasks_due_date ON case_tasks(due_date);
 CREATE INDEX IF NOT EXISTS idx_case_tasks_status ON case_tasks(status);
 
+-- case_notes(메모 누적 기록): 사건(cases)의 memo 칸은 "상담내용요약" 하나만 담는 단일 필드로 쓰고,
+-- 계속 쌓이는 메모는 이 테이블에 별도로 남긴다. 법률사무소 실무 기록이라 정정이 필요해도 기존 행을
+-- 고치지 않고 새 메모를 추가하는 방식으로만 쓴다 - 그래서 UPDATE/DELETE API를 만들지 않는다
+-- (수정불가/append-only). 작성일시(created_at)·작성자(created_by)는 서버가 자동으로 채운다.
+CREATE TABLE IF NOT EXISTS case_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  created_by INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (case_id) REFERENCES cases(id),
+  FOREIGN KEY (created_by) REFERENCES employees(id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_notes_case_id ON case_notes(case_id);
+
 -- 의뢰인별 인감도장/공동인증서 USB 수령 여부 추적. 의뢰인 명단 자체는 외부 구글시트가
 -- 원본(읽기 전용)이라 여기 쓸 수 없으므로, 이 앱만의 추가 정보를 의뢰인명(+사건번호)으로
 -- 매칭해서 별도 테이블에 보관한다.
@@ -2152,6 +2167,36 @@ app.post('/api/case-tasks', requireLogin, async (req, res) => {
   } catch (err) { console.error('구글 캘린더 등록 실패:', err.message); }
 
   res.status(201).json(caseTaskWithCase(task));
+});
+
+/* ---- /api/case-notes (사건별 메모 누적 기록 - append-only, 수정/삭제 API 없음) ---- */
+
+app.get('/api/case-notes', requireLogin, (req, res) => {
+  const caseId = req.query.caseId;
+  if (!caseId) return res.status(400).json({ error: 'caseId가 필요합니다.' });
+  const notes = db
+    .prepare(`SELECT n.*, e.name AS author_name FROM case_notes n
+              LEFT JOIN employees e ON e.id = n.created_by
+              WHERE n.case_id = ? ORDER BY n.id DESC`)
+    .all(caseId);
+  res.json(notes);
+});
+
+app.post('/api/case-notes', requireLogin, (req, res) => {
+  const { case_id, content } = req.body || {};
+  if (!case_id || !content || !content.trim()) return res.status(400).json({ error: '사건과 메모 내용은 필수입니다.' });
+
+  const caseRow = db.prepare('SELECT id FROM cases WHERE id = ?').get(case_id);
+  if (!caseRow) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  const info = db
+    .prepare('INSERT INTO case_notes (case_id, content, created_by) VALUES (?, ?, ?)')
+    .run(case_id, content.trim(), req.user.id);
+  const note = db
+    .prepare(`SELECT n.*, e.name AS author_name FROM case_notes n
+              LEFT JOIN employees e ON e.id = n.created_by WHERE n.id = ?`)
+    .get(info.lastInsertRowid);
+  res.status(201).json(note);
 });
 
 app.patch('/api/case-tasks/:id', requireLogin, async (req, res) => {

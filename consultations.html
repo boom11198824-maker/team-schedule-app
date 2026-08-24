@@ -417,7 +417,14 @@ function render() {
   if (q) {
     filtered = filtered.filter((c) => (c.client_name || '').toLowerCase().includes(q));
   }
-  filtered = filtered.slice().sort((a, b) => b.id - a.id);
+  // 등록일(id) 기준이 아니라 최근 변경일(updated_at) 기준으로 정렬한다 - 의뢰인목록(/api/clients)과
+  // 같은 방식(OSMU). 접수 처리 등으로 상태가 바뀐 순간 updated_at이 갱신되므로(서버 PATCH에서 자동
+  // 처리) 오래 전에 등록된 상담이라도 방금 접수 처리했다면 다시 목록 위로 올라온다.
+  filtered = filtered.slice().sort((a, b) => {
+    const av = a.updated_at || a.created_at || '';
+    const bv = b.updated_at || b.created_at || '';
+    return bv.localeCompare(av) || (b.id - a.id);
+  });
 
   document.getElementById('list-count').textContent = `${filtered.length}건`;
   const tbody = document.getElementById('list-tbody');

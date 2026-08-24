@@ -200,6 +200,7 @@ table.client-table td.muted { color: var(--text-muted); }
             <th>상담일</th>
             <th>상태</th>
             <th>메모</th>
+            <th>레포트</th>
           </tr>
         </thead>
         <tbody id="list-tbody"></tbody>
@@ -401,6 +402,7 @@ function rowHTML(c) {
       <td class="muted">${escapeHTML(c.consult_date || '-')}</td>
       <td><span class="status-pill ${escapeHTML(statusLabel)}">${escapeHTML(statusLabel)}</span></td>
       <td class="memo-cell ${memoText ? '' : 'empty'}" data-memo-id="${c.id}">${memoText}</td>
+      <td><button type="button" class="btn-secondary" data-report-edit-id="${c.id}" style="font-size:12px; padding:4px 10px;">✏️ 수정</button></td>
     </tr>`;
 }
 
@@ -449,6 +451,14 @@ function render() {
       e.stopPropagation();
       const c = filtered.find((x) => String(x.id) === cell.dataset.memoId);
       if (c && c.memo) openMemoModal(c);
+    });
+  });
+  // 상담레포트 수정: consult-report.html을 ?edit=<사건ID>로 열면, 그 사건에 저장된 리포트
+  // 원본(consult_report_json)을 불러와 수정 모드로 시작한다 (새 상담 등록과 동일하게 새 탭에서).
+  tbody.querySelectorAll('[data-report-edit-id]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.open(`/consult-report.html?edit=${btn.dataset.reportEditId}`, '_blank');
     });
   });
 }

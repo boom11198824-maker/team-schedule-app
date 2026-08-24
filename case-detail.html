@@ -113,6 +113,11 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
 .success-text { color: var(--status-good); font-size: 13px; margin: 8px 0 0; min-height: 0; }
 .empty-note { font-size: 13px; color: var(--text-muted); padding: 10px 2px; }
 
+.note-item { padding: 10px 0; border-bottom: 1px solid var(--gridline); }
+.note-item:last-child { border-bottom: none; }
+.note-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+.note-content { font-size: 13px; color: var(--text-primary); white-space: pre-wrap; word-break: break-word; }
+
 .recent-submit {
   font-size: 13px; color: var(--text-secondary); background: var(--status-muted-bg);
   border-radius: 8px; padding: 10px 12px; margin: 0 0 18px;
@@ -276,7 +281,7 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
           <select id="f-stage"></select>
           <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">※ 사건유형을 입력하면 그에 맞는 단계 목록으로 바뀝니다.</p>
 
-          <label>메모</label>
+          <label>상담내용요약</label>
           <textarea id="f-memo" rows="2"></textarea>
 
           <p id="info-error" class="error-text"></p>
@@ -287,6 +292,20 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
             <button type="submit" class="btn-primary">저장</button>
           </div>
         </form>
+      </div>
+
+      <!-- 메모 (누적 기록 - 한 번 남기면 수정/삭제 불가) -->
+      <div class="card">
+        <h3>메모</h3>
+        <p style="font-size:11px; color:var(--text-muted); margin:0 0 12px;">※ 한 번 남기면 수정·삭제할 수 없습니다. 정정이 필요하면 새 메모를 추가해주세요. 작성일시·작성자는 자동으로 기록됩니다.</p>
+        <div id="note-list"></div>
+        <p id="note-empty-note" class="empty-note hidden">등록된 메모가 없습니다.</p>
+        <textarea id="f-note-input" rows="2" placeholder="메모를 입력하세요" style="margin-top:8px;"></textarea>
+        <p id="note-error" class="error-text"></p>
+        <div class="actions-row">
+          <div class="spacer"></div>
+          <button type="button" id="btn-add-note" class="btn-primary">메모 추가</button>
+        </div>
       </div>
 
       <!-- 서류 수령 현황 -->
@@ -890,6 +909,54 @@ document.getElementById('btn-delete-case').addEventListener('click', async () =>
   }
 });
 
+/* ---- 메모 (누적 기록) ---- */
+function noteItemHTML(n) {
+  const when = (n.created_at || '').slice(0, 16).replace('T', ' ');
+  return `
+    <div class="note-item">
+      <div class="note-meta">${escapeHTML(when)} · ${escapeHTML(n.author_name || '')}</div>
+      <div class="note-content">${escapeHTML(n.content)}</div>
+    </div>`;
+}
+
+async function renderNotes() {
+  const list = document.getElementById('note-list');
+  const emptyNote = document.getElementById('note-empty-note');
+  try {
+    const notes = await api(`/api/case-notes?caseId=${caseId}`);
+    if (!notes.length) {
+      list.innerHTML = '';
+      emptyNote.classList.remove('hidden');
+      return;
+    }
+    emptyNote.classList.add('hidden');
+    list.innerHTML = notes.map(noteItemHTML).join('');
+  } catch (err) {
+    list.innerHTML = '';
+    emptyNote.textContent = err.message;
+    emptyNote.classList.remove('hidden');
+  }
+}
+
+document.getElementById('btn-add-note').addEventListener('click', async () => {
+  const errorEl = document.getElementById('note-error');
+  const input = document.getElementById('f-note-input');
+  const content = input.value.trim();
+  errorEl.textContent = '';
+  if (!content) { errorEl.textContent = '메모 내용을 입력해주세요.'; return; }
+  const btn = document.getElementById('btn-add-note');
+  btn.disabled = true;
+  try {
+    await api('/api/case-notes', { method: 'POST', body: JSON.stringify({ case_id: caseId, content }) });
+    input.value = '';
+    await renderNotes();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 /* ---- 최근 제출 요약 ---- */
 async function renderRecentSubmit() {
   const el = document.getElementById('recent-submit');
@@ -1277,7 +1344,7 @@ async function init() {
   fillInfoForm(currentCase);
   resetTaskForm();
 
-  const tasks = [renderTaskTable(), renderFiles()];
+  const tasks = [renderTaskTable(), renderFiles(), renderNotes()];
   if (hasTab(currentUser, 'fee')) {
     document.getElementById('fee-card').style.display = '';
     resetFeeForm();

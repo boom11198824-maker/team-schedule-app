@@ -209,6 +209,7 @@ for (const col of [
   'seal_received INTEGER NOT NULL DEFAULT 0', 'seal_received_date TEXT',
   'cert_usb_received INTEGER NOT NULL DEFAULT 0', 'cert_usb_received_date TEXT',
   'updated_at TEXT', 'retainer_date TEXT', 'region TEXT', 'client_rank INTEGER',
+  'consult_date TEXT',
 ]) {
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
@@ -218,6 +219,13 @@ for (const col of [
 }
 // updated_at이 없는 기존 사건은 등록일로 백필 (의뢰인 목록을 "최근 변경순"으로 보여주기 위해 필요).
 db.exec("UPDATE cases SET updated_at = created_at WHERE updated_at IS NULL");
+
+// consult_date(상담일) vs intake_date(접수일, 법원 접수 시점)는 서로 다른 개념인데, 예전엔
+// consult-report.html이 상담일을 intake_date 칸에 그대로 써넣어서 나중에 접수일을 입력/수정하면
+// 원래 상담일이 지워지는 문제가 있었다. consult_date 칸을 새로 분리하면서, 기존 사건은 지금까지
+// intake_date에 들어있던 값을 상담일의 최선 추정치로 백필한다(완전한 과거 복원은 불가능하지만
+// 이 시점부터는 두 값이 다시 섞이지 않는다).
+db.exec("UPDATE cases SET consult_date = intake_date WHERE consult_date IS NULL AND intake_date IS NOT NULL AND intake_date != ''");
 
 // client_rank(의뢰인목록 고정 정렬키): retainer_date는 시트 표기가 제각각이라 정렬이 들쭉날쭉해
 // "뒤죽박죽"으로 보이는 문제가 있었다. client_rank는 숫자가 클수록 목록 맨 위에 뜨는 고정 순번이며,
@@ -1221,15 +1229,15 @@ app.get('/api/cases/:id', requireLogin, (req, res) => {
 });
 
 app.post('/api/cases', requireLogin, (req, res) => {
-  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, region } = req.body || {};
+  const { client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status, region } = req.body || {};
   if (!client_name) return res.status(400).json({ error: '의뢰인명은 필수입니다.' });
 
   const info = db
-    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status, region, created_by, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
+    .prepare(`INSERT INTO cases (client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status, region, created_by, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
     .run(
       client_name, phone || '', court || '', court_case_no || '', assignee_name || '', memo || '',
-      case_type || '', intake_date || '', assigned_lawyer || '', current_stage || '', status || '', region || '', req.user.id
+      case_type || '', intake_date || '', consult_date || '', assigned_lawyer || '', current_stage || '', status || '', region || '', req.user.id
     );
 
   res.status(201).json(db.prepare('SELECT * FROM cases WHERE id = ?').get(info.lastInsertRowid));
@@ -1240,7 +1248,7 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
   if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
 
   const {
-    client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, assigned_lawyer, current_stage, status,
+    client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status,
     seal_received, seal_received_date, cert_usb_received, cert_usb_received_date, region,
   } = req.body || {};
   const updated = {
@@ -1252,6 +1260,7 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
     memo: memo ?? existing.memo,
     case_type: case_type ?? existing.case_type,
     intake_date: intake_date ?? existing.intake_date,
+    consult_date: consult_date ?? existing.consult_date,
     assigned_lawyer: assigned_lawyer ?? existing.assigned_lawyer,
     current_stage: current_stage ?? existing.current_stage,
     status: status ?? existing.status,
@@ -1261,11 +1270,11 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
     cert_usb_received_date: cert_usb_received_date ?? existing.cert_usb_received_date,
     region: region ?? existing.region,
   };
-  db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, assigned_lawyer=?, current_stage=?, status=?,
+  db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, consult_date=?, assigned_lawyer=?, current_stage=?, status=?,
               seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=?, region=?, updated_at=datetime('now') WHERE id = ?`)
     .run(
       updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo,
-      updated.case_type, updated.intake_date, updated.assigned_lawyer, updated.current_stage, updated.status,
+      updated.case_type, updated.intake_date, updated.consult_date, updated.assigned_lawyer, updated.current_stage, updated.status,
       updated.seal_received, updated.seal_received_date, updated.cert_usb_received, updated.cert_usb_received_date,
       updated.region,
       existing.id

@@ -904,7 +904,7 @@ async function syncToLawPilot(s){
     // 상담일(consult_date)과 접수일(intake_date, 법원 접수 시점)은 서로 다른 값이라 여기서는
     // consult_date만 쓴다 - 예전엔 intake_date에 상담일을 써넣어서, 나중에 사건상세에서 실제
     // 접수일을 입력하면 최초 상담일 기록이 지워지는 문제가 있었다.
-    const payload={client_name:name,phone:s.phone||'',region:s.region||'',consult_date:s.date||'',assignee_name:s.counselor||'',memo:lpMergeMemo(existingMemo,autoBlock),status:'상담중'};
+    const payload={client_name:name,phone:s.phone||'',region:s.region||'',consult_date:s.date||'',assignee_name:s.counselor||'',memo:lpMergeMemo(existingMemo,autoBlock),status:'상담중',consult_report_json:JSON.stringify(serialize())};
     const res=existingCaseId
       ?await fetch('/api/cases/'+existingCaseId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
       :await fetch('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -928,6 +928,41 @@ async function syncToLawPilot(s){
   }catch(e){
     console.error('LawPilot 연동 실패',e);
     lpSetBadge('⚠ 상담관리 동기화 실패 (로컬엔 저장됨)','err');
+  }
+}
+// 상담레포트 수정: 상담관리 목록의 "레포트 수정" 링크로 ?edit=<사건ID>가 붙어서 열리면 호출된다.
+// consult_report_json(서버 DB, cases 테이블)에 저장돼 있는 리포트 원본을 불러와 그대로 복원한다 -
+// 로컬 저장소(beopjin_list)와 달리 사건 데이터라 어느 직원의 브라우저에서 열어도 항상 같은 내용을
+// 불러온다. 저장하면(saveNow→syncToLawPilot) 새 사건을 만들지 않고 이 사건에 그대로 반영(PATCH)
+// 되도록 lpSetCaseId로 로컬 매핑을 먼저 연결해둔다.
+async function loadForEdit(caseId){
+  lpSetBadge('기존 상담 불러오는 중…','muted');
+  try{
+    const res=await fetch('/api/cases/'+caseId);
+    if(!res.ok)throw new Error('사건을 찾을 수 없습니다.');
+    const c=await res.json();
+    let data=null;
+    if(c.consult_report_json){try{data=JSON.parse(c.consult_report_json)}catch(e){data=null}}
+    if(data){
+      restore(data);
+      lpSetCaseId(currentId,caseId);
+      lpSetBadge('기존 상담레포트를 불러왔습니다 (수정 모드 · 저장하면 이 사건에 반영됩니다)','ok');
+      return;
+    }
+    // 리포트 원본이 없는 예전 사건(이 기능 이전에 등록됐거나 다른 경로로 만들어진 사건) - 기본
+    // 정보만 채워서 새로 작성하게 한다. 그래도 저장하면 새 사건이 아니라 이 사건에 반영된다.
+    document.getElementById('f_name').value=c.client_name||'';
+    document.getElementById('f_phone').value=c.phone||'';
+    if(c.consult_date)document.getElementById('f_date').value=c.consult_date;
+    if(c.assignee_name)document.getElementById('f_counselor').value=c.assignee_name;
+    if(c.region){document.getElementById('f_region').value=c.region;syncRegionUI()}
+    lpSetCaseId(currentId,caseId);
+    lpSetBadge('이 사건에는 저장된 리포트 원본이 없어 기본정보만 불러왔습니다. 작성 후 저장하면 이 사건에 반영됩니다.','muted');
+    update();fitPreview();setTimeout(fitPreview,300);
+  }catch(e){
+    console.error('상담레포트 불러오기 실패',e);
+    alert('기존 상담 정보를 불러오지 못했습니다: '+e.message);
+    update();fitPreview();setTimeout(fitPreview,300);
   }
 }
 function backToConsultations(){
@@ -980,11 +1015,15 @@ function sampleRehab(){const o=baseSample();o.selectedCauses=['채무 돌려막�
 function sampleBk(){const o=baseSample();o.caseType='bankruptcy';o.selectedCauses=['개인사업 실패','병원비'];o.incomeTypes=['무직'];o.ratio=100;o.ratioCustom='100';Object.assign(o.fields,{f_date:'2026-07-20',f_time:'16:00',f_counselor:'김진홍',f_name:'이영희',f_gender:'여',f_birthYear:'1968',f_age:'58',f_phone:'010-9876-5432',f_region:'서울특별시',f_court:'서울회생법원',f_married:'이혼',f_unsecPrincipal:'120,000,000',f_unsecInterest:'8,000,000',f_tax:'2,000,000',f_creditors:'9',f_household:'1',f_keyIssues:'근로능력 및 건강상태 검토, 사업 실패 경위 소명',f_favorable:'환가 대상 재산 없음, 소득 없음',f_unfavorable:'비면책채권(조세) 일부 존재',f_documents:'진단서, 폐업 사실 증명, 부채증명서',f_opinion:'재산 및 소득이 없어 파산·면책 검토 가능.',f_reviewStatus:'파산·면책 검토 가능'});o.checks={f_addrSame:true,f_disability:true};return o}
 function loadSample(t){restore(t==='rehab'?sampleRehab():sampleBk())}
 function mtab(w){document.getElementById('tabInput').classList.toggle('on',w==='input');document.getElementById('tabResult').classList.toggle('on',w==='result');document.getElementById('formPane').classList.toggle('mhide',w!=='input');document.getElementById('previewPane').classList.toggle('mhide',w!=='result');if(w==='result')fitPreview()}
-function init(){amtMode=settings.amtMode||'kor';applyBrand();document.getElementById('brandLogo').innerHTML=settings.office.logo?'<img src="'+settings.office.logo+'">':esc(settings.office.name);initChips();fillRegionSelect();fillLiveRegionSelect();renderExpenses();renderAssets();onHousing();onAddrSame();renderQuick();const t=new Date();document.getElementById('f_date').value=t.toISOString().slice(0,10);document.getElementById('f_time').value=t.toTimeString().slice(0,5);if(window.innerWidth>900)document.getElementById('previewPane').classList.remove('mhide');/* 이 페이지는 상담관리의 "새 상담 등록"에서만 열리므로(다른 곳에서 이어작성용으로 링크하지 않음)
-항상 빈 양식으로 시작해야 한다. 예전엔 마지막 자동저장본(beopjin_draft)을 열 때마다 그대로 불러와서
-전혀 다른 상담을 새로 시작해도 직전에 쓰던 내용이 그대로 남아있는 문제가 있었다 - 자동저장(임시복구용)은
-계속 하되, 페이지를 열 때 자동으로 불러오지는 않는다. "저장된 상담" 목록에서 불러오기를 눌러야만
-과거 내용을 불러온다. */update();fitPreview();setTimeout(fitPreview,300)}
+function init(){amtMode=settings.amtMode||'kor';applyBrand();document.getElementById('brandLogo').innerHTML=settings.office.logo?'<img src="'+settings.office.logo+'">':esc(settings.office.name);initChips();fillRegionSelect();fillLiveRegionSelect();renderExpenses();renderAssets();onHousing();onAddrSame();renderQuick();const t=new Date();document.getElementById('f_date').value=t.toISOString().slice(0,10);document.getElementById('f_time').value=t.toTimeString().slice(0,5);if(window.innerWidth>900)document.getElementById('previewPane').classList.remove('mhide');/* "새 상담 등록"(?edit 파라미터 없음)으로 열리면 항상 빈 양식으로 시작해야 한다. 예전엔 마지막
+자동저장본(beopjin_draft)을 열 때마다 그대로 불러와서 전혀 다른 상담을 새로 시작해도 직전에 쓰던
+내용이 그대로 남아있는 문제가 있었다 - 자동저장(임시복구용)은 계속 하되, 페이지를 열 때 자동으로
+불러오지는 않는다. "저장된 상담" 목록에서 불러오기를 눌러야만 과거 내용을 불러온다.
+반면 상담관리 목록의 "레포트 수정" 링크로 ?edit=<사건ID>가 붙어서 열리면, 그 사건에 저장돼 있는
+리포트 원본(서버 DB)을 불러와 수정 모드로 시작한다(loadForEdit) - 로컬 저장소가 아니라 사건
+데이터라 어느 직원의 브라우저에서 열어도 항상 같은 내용을 불러온다. */
+const editCaseId=new URLSearchParams(location.search).get('edit');
+if(editCaseId){loadForEdit(editCaseId)}else{update();fitPreview();setTimeout(fitPreview,300)}}
 window.addEventListener('load',init);
 </script>
 </body>

@@ -910,8 +910,24 @@ document.getElementById('btn-delete-case').addEventListener('click', async () =>
 });
 
 /* ---- 메모 (누적 기록) ---- */
+// DB(SQLite)의 datetime('now')는 UTC 기준 'YYYY-MM-DD HH:MM:SS' 문자열을 그대로 반환한다(타임존 표시 없음).
+// 예전 코드는 이 문자열을 그대로 잘라서 보여줬는데, 브라우저가 'T' 없는 문자열을 로컬시간으로 오인해서
+// 파싱하는 경우가 있어(엔진마다 다름) 실제 한국시간과 최대 9시간 어긋나 보이는 문제가 있었다(예: 오전
+// 10시 1분에 남긴 메모가 다른 시각으로 표시됨). 문자열을 명시적으로 UTC로 파싱한 뒤 Asia/Seoul로
+// 변환해서 항상 정확한 한국시간을 보여준다.
+function formatKST(s) {
+  if (!s) return '';
+  const iso = (s.includes('T') ? s : s.replace(' ', 'T')).replace(/Z$/, '') + 'Z';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return s;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(d);
+  const get = (t) => (parts.find((p) => p.type === t) || {}).value || '';
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
+}
 function noteItemHTML(n) {
-  const when = (n.created_at || '').slice(0, 16).replace('T', ' ');
+  const when = formatKST(n.created_at);
   return `
     <div class="note-item">
       <div class="note-meta">${escapeHTML(when)} · ${escapeHTML(n.author_name || '')}</div>

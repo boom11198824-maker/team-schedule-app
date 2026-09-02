@@ -366,7 +366,7 @@ input[type="text"]:focus { outline: none; border-color: var(--coral); background
       <p class="card-title">궁금하신 점이 있으신가요?</p>
       <p class="contact-lead">담당자에게 언제든 문의하세요.</p>
       <div class="contact-buttons">
-        <a class="btn-contact" id="btn-call" href="#"><span class="ico">📞</span><span>전화 문의</span></a>
+        <a class="btn-contact" id="btn-call" href="tel:031-214-5568"><span class="ico">📞</span><span>전화 문의</span></a>
         <a class="btn-contact" id="btn-chat" href="#"><span class="ico">💬</span><span>문자/카카오톡 문의</span></a>
       </div>
     </div>
@@ -613,7 +613,6 @@ function resetToLookup() {
 
 /* 문의 버튼: 실제 전화번호/카카오톡 채널 링크는 아직 연결되지 않았다 — 사무소에서 받는 대로
    href를 채워 넣으면 된다(연결 전까지는 클릭해도 아무 동작 없이 페이지 상단으로 이동만 한다). */
-document.getElementById('btn-call').addEventListener('click', (e) => { e.preventDefault(); });
 document.getElementById('btn-chat').addEventListener('click', (e) => { e.preventDefault(); });
 </script>
 </body>

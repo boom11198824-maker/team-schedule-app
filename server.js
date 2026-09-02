@@ -226,6 +226,8 @@ for (const col of [
   'cert_usb_received INTEGER NOT NULL DEFAULT 0', 'cert_usb_received_date TEXT',
   'updated_at TEXT', 'retainer_date TEXT', 'region TEXT', 'client_rank INTEGER',
   'consult_date TEXT', 'consult_report_json TEXT',
+  'client_grade TEXT', 'client_grade_reason TEXT',
+  'alimtalk_count INTEGER NOT NULL DEFAULT 0', 'alimtalk_last_sent TEXT',
 ]) {
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
@@ -235,6 +237,21 @@ for (const col of [
 }
 // updated_at이 없는 기존 사건은 등록일로 백필 (의뢰인 목록을 "최근 변경순"으로 보여주기 위해 필요).
 db.exec("UPDATE cases SET updated_at = created_at WHERE updated_at IS NULL");
+
+// 고객등급(client_grade): 상담관리 페이지에서 쓰는 "영업 파이프라인" 축. status(사건 진행 단계)와는
+// 완전히 별개의 개념이라 둘이 동시에 존재할 수 있다 (예: 수임완료 + 접수전 → 이후 수임완료 + 사건진행중).
+// 직원마다 판단 기준이 달라 데이터가 어긋나는 일이 없도록, 각 등급의 정의를 서버/프론트 양쪽에 고정해둔다.
+//   0.수임완료 — 계약 완료
+//   1.진행임박 — 진행 의사가 명확함. 방문/계약/입금 등 구체적 행동이 예정되어 있음 (좁게 적용)
+//   2.진행유력 — 가능성 높음. 추가 상담/검토 중
+//   3.진행유보 — 당장 진행하지 않음. 추후 가능성 있음 ("생각해보고 연락드릴게요" 등은 여기)
+//   4.부재중 — 상담 자체가 아직 제대로 이루어지지 않음
+//   5.드롭 — 더 이상 추적하지 않음 (드롭 사유 필수)
+//   (미지정/빈 값) — 아직 등급 판단 전
+// 등급 수정(및 드롭 사유 설정)은 관리자(admin) 계정만 가능하다 — 아래 PATCH 핸들러에서 강제한다.
+const CLIENT_GRADES = ['0', '1', '2', '3', '4', '5'];
+// 드롭(5) 처리 시 선택하는 사유. 추후 상담→계약 전환율 분석(상담 100건 중 왜 20건만 계약됐는지 등)에 쓰인다.
+const DROP_REASONS = ['연락두절', '비용', '타사선임', '진행의사없음', '자격미달', '시기미정', '기타'];
 
 // consult_date(상담일) vs intake_date(접수일, 법원 접수 시점)는 서로 다른 개념인데, 예전엔
 // consult-report.html이 상담일을 intake_date 칸에 그대로 써넣어서 나중에 접수일을 입력/수정하면
@@ -1284,7 +1301,29 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
   const {
     client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status,
     seal_received, seal_received_date, cert_usb_received, cert_usb_received_date, region, consult_report_json,
+    client_grade, client_grade_reason,
   } = req.body || {};
+
+  // 고객등급/드롭사유는 관리자만 수정 가능 — 요청에 값이 담겨 있는데 관리자가 아니면 요청 전체를 거부한다
+  // (일부만 조용히 무시하면 "분명 저장했는데 안 바뀌었다"는 혼란을 만들 수 있어서).
+  if ((client_grade !== undefined || client_grade_reason !== undefined) && req.user.role !== 'admin') {
+    return res.status(403).json({ error: '고객등급은 관리자만 수정할 수 있습니다.' });
+  }
+  if (client_grade !== undefined && client_grade !== '' && client_grade !== null && !CLIENT_GRADES.includes(String(client_grade))) {
+    return res.status(400).json({ error: '올바르지 않은 고객등급입니다.' });
+  }
+  const finalGrade = client_grade !== undefined ? client_grade : existing.client_grade;
+  // 드롭(5)이 아닌 등급이면 이전에 남아있던 드롭 사유는 의미가 없으므로 같이 지운다.
+  let resolvedGradeReason = finalGrade !== '5' ? '' : (client_grade_reason !== undefined ? client_grade_reason : existing.client_grade_reason);
+  if (finalGrade === '5') {
+    if (!resolvedGradeReason) {
+      return res.status(400).json({ error: '드롭 사유를 선택해야 합니다.' });
+    }
+    if (!DROP_REASONS.includes(resolvedGradeReason)) {
+      return res.status(400).json({ error: '올바르지 않은 드롭 사유입니다.' });
+    }
+  }
+
   const updated = {
     client_name: client_name ?? existing.client_name,
     phone: phone ?? existing.phone,
@@ -1304,16 +1343,32 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
     cert_usb_received_date: cert_usb_received_date ?? existing.cert_usb_received_date,
     region: region ?? existing.region,
     consult_report_json: consult_report_json ?? existing.consult_report_json,
+    client_grade: finalGrade ?? existing.client_grade,
+    client_grade_reason: resolvedGradeReason,
   };
   db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, consult_date=?, assigned_lawyer=?, current_stage=?, status=?,
-              seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=?, region=?, consult_report_json=?, updated_at=datetime('now') WHERE id = ?`)
+              seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=?, region=?, consult_report_json=?,
+              client_grade=?, client_grade_reason=?, updated_at=datetime('now') WHERE id = ?`)
     .run(
       updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo,
       updated.case_type, updated.intake_date, updated.consult_date, updated.assigned_lawyer, updated.current_stage, updated.status,
       updated.seal_received, updated.seal_received_date, updated.cert_usb_received, updated.cert_usb_received_date,
       updated.region, updated.consult_report_json,
+      updated.client_grade, updated.client_grade_reason,
       existing.id
     );
+
+  res.json(db.prepare('SELECT * FROM cases WHERE id = ?').get(existing.id));
+});
+
+// 알림톡 발송 기록: "알림톡 2회 · 마지막 9/1"처럼 직원이 재확인 없이 바로 볼 수 있게 누적한다.
+// 등급과 달리 알림톡 발송 자체는 실무자 누구나 하는 일이라 관리자 제한을 두지 않는다.
+app.post('/api/cases/:id/alimtalk-log', requireLogin, (req, res) => {
+  const existing = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  db.prepare(`UPDATE cases SET alimtalk_count = COALESCE(alimtalk_count, 0) + 1, alimtalk_last_sent = datetime('now') WHERE id = ?`)
+    .run(existing.id);
 
   res.json(db.prepare('SELECT * FROM cases WHERE id = ?').get(existing.id));
 });

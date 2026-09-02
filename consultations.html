@@ -118,6 +118,32 @@ table.client-table td.muted { color: var(--text-muted); }
 .status-pill.개시결정후 { background: #e3e9fb; color: var(--brand-navy); }
 .status-pill.미지정 { background: var(--status-muted-bg); color: var(--text-muted); }
 
+/* ---- 고객등급(client_grade): 상담관리의 영업 파이프라인 축. status(사건 진행 단계)와는 별개다. ---- */
+.grade-pill { display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.grade-pill.g0 { background: var(--status-good-bg); color: var(--status-good); }
+.grade-pill.g1 { background: var(--brand-coral); color: white; }
+.grade-pill.g2 { background: var(--status-warning-bg); color: var(--status-warning); }
+.grade-pill.g3 { background: var(--status-muted-bg); color: var(--text-secondary); }
+.grade-pill.g4 { background: var(--status-serious-bg); color: var(--status-serious); }
+.grade-pill.g5 { background: var(--status-critical-bg); color: var(--status-critical); }
+.grade-pill.gnone { background: var(--status-muted-bg); color: var(--text-muted); }
+.grade-pill.editable { cursor: pointer; }
+.grade-pill.editable:hover { filter: brightness(0.95); }
+.alimtalk-line { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.alimtalk-btn {
+  border: 1px solid var(--gridline); background: white; color: var(--text-secondary); font-size: 10px;
+  padding: 1px 6px; border-radius: 999px; cursor: pointer; line-height: 1.6; font-family: inherit;
+}
+.alimtalk-btn:hover { background: var(--status-muted-bg); }
+.alimtalk-btn:disabled { opacity: 0.5; cursor: default; }
+
+.grade-options { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; max-height: 46vh; overflow-y: auto; }
+.grade-option { display: flex; align-items: flex-start; gap: 10px; padding: 10px 8px; border-radius: 8px; cursor: pointer; }
+.grade-option:hover { background: var(--status-muted-bg); }
+.grade-option input { width: auto; margin: 3px 0 0; }
+.grade-option-main { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.grade-option-desc { color: var(--text-muted); font-size: 12px; font-weight: 400; }
+
 /* ---- modal ---- */
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex;
@@ -186,6 +212,16 @@ table.client-table td.muted { color: var(--text-muted); }
         <option value="개시결정후">개시결정후</option>
         <option value="">전체</option>
       </select>
+      <select id="grade-filter">
+        <option value="">등급 전체</option>
+        <option value="0">0. 수임완료</option>
+        <option value="1">1. 진행임박</option>
+        <option value="2">2. 진행유력</option>
+        <option value="3">3. 진행유보</option>
+        <option value="4">4. 부재중</option>
+        <option value="5">5. 드롭</option>
+        <option value="none">미분류</option>
+      </select>
       <button type="button" class="btn-primary" id="btn-new-consultation">+ 새 상담 등록</button>
       <button type="button" class="btn-secondary" id="btn-new-consultation-quick" title="상담결과리포트 없이 이름만 빠르게 등록">간단 등록</button>
     </div>
@@ -199,6 +235,7 @@ table.client-table td.muted { color: var(--text-muted); }
             <th>담당직원</th>
             <th>상담일</th>
             <th>상태</th>
+            <th>등급</th>
             <th>메모</th>
             <th>레포트</th>
           </tr>
@@ -217,6 +254,32 @@ table.client-table td.muted { color: var(--text-muted); }
       <div class="modal-actions">
         <div class="spacer"></div>
         <button type="button" class="btn-secondary" id="btn-close-memo">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="grade-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2 id="grade-modal-title">고객등급 변경</h2>
+      <div id="grade-options" class="grade-options"></div>
+      <div id="grade-drop-reason-wrap" class="hidden">
+        <label>드롭 사유 *</label>
+        <select id="grade-drop-reason">
+          <option value="">선택하세요</option>
+          <option value="연락두절">연락두절</option>
+          <option value="비용">비용</option>
+          <option value="타사선임">타사선임</option>
+          <option value="진행의사없음">진행의사없음</option>
+          <option value="자격미달">자격미달</option>
+          <option value="시기미정">시기미정</option>
+          <option value="기타">기타</option>
+        </select>
+      </div>
+      <p id="grade-error" class="error-text"></p>
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button type="button" class="btn-secondary" id="btn-close-grade">취소</button>
+        <button type="button" class="btn-primary" id="btn-save-grade">저장</button>
       </div>
     </div>
   </div>
@@ -391,7 +454,107 @@ document.getElementById('btn-close-memo').addEventListener('click', () => {
   document.getElementById('memo-modal').classList.add('hidden');
 });
 
-function rowHTML(c) {
+/* ---- 고객등급(client_grade): 상담관리의 영업 파이프라인 축. status(사건 진행 단계)와는 완전히
+   별개의 개념이라 동시에 존재할 수 있다(예: 수임완료+접수전 → 이후 수임완료+사건진행중). 각 등급의
+   정의를 여기 고정해서 직원마다 판단 기준이 어긋나는 일이 없도록 한다. 수정은 관리자만 가능(서버에서도 강제). ---- */
+const GRADE_DEFS = {
+  '0': { label: '수임완료', desc: '계약 완료', cls: 'g0' },
+  '1': { label: '진행임박', desc: '진행 의사가 명확함. 방문/계약/입금 등 구체적 행동이 예정되어 있음 (좁게 적용 — "생각해보고 연락드릴게요"는 진행유보)', cls: 'g1' },
+  '2': { label: '진행유력', desc: '가능성 높음. 추가 상담·검토 중', cls: 'g2' },
+  '3': { label: '진행유보', desc: '당장 진행하지 않음. 추후 가능성 있음', cls: 'g3' },
+  '4': { label: '부재중', desc: '상담 자체가 아직 제대로 이루어지지 않음', cls: 'g4' },
+  '5': { label: '드롭', desc: '더 이상 추적하지 않음 (드롭 사유 선택 필요)', cls: 'g5' },
+};
+const DROP_REASONS = ['연락두절', '비용', '타사선임', '진행의사없음', '자격미달', '시기미정', '기타'];
+
+// 알림톡 마지막 발송일을 "9/1"처럼 짧게 표시. SQLite datetime('now')는 UTC라서 'Z'를 붙여
+// 명시적으로 UTC로 해석시킨 뒤 Asia/Seoul로 환산한다 (메모 타임스탬프 KST 버그와 동일한 원인/해법).
+function fmtShortKST(sqliteUtcStr) {
+  if (!sqliteUtcStr) return '';
+  const d = new Date(String(sqliteUtcStr).replace(' ', 'T') + 'Z');
+  if (isNaN(d.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric' }).formatToParts(d);
+  const m = (parts.find((p) => p.type === 'month') || {}).value;
+  const day = (parts.find((p) => p.type === 'day') || {}).value;
+  return m && day ? `${m}/${day}` : '';
+}
+
+function gradeCellHTML(c, isAdmin) {
+  const def = c.client_grade ? GRADE_DEFS[c.client_grade] : null;
+  const label = def ? `${c.client_grade}.${def.label}` : '미분류';
+  const cls = def ? def.cls : 'gnone';
+  const alimtalkCount = c.alimtalk_count || 0;
+  const lastSent = fmtShortKST(c.alimtalk_last_sent);
+  const alimtalkText = alimtalkCount > 0
+    ? `알림톡 ${alimtalkCount}회${lastSent ? ' · 마지막 ' + lastSent : ''}`
+    : '알림톡 미발송';
+  return `
+    <div class="grade-pill ${cls} ${isAdmin ? 'editable' : ''}" data-grade-id="${c.id}">${escapeHTML(label)}</div>
+    <div class="alimtalk-line">
+      <span>${escapeHTML(alimtalkText)}</span>
+      <button type="button" class="alimtalk-btn" data-alimtalk-id="${c.id}" title="알림톡 발송 기록 +1">+1</button>
+    </div>`;
+}
+
+function buildGradeOptionsHTML(selected) {
+  const sel = selected || '';
+  const items = [{ value: '', label: '미분류', desc: '아직 등급 판단 전' }].concat(
+    Object.keys(GRADE_DEFS).map((k) => ({ value: k, label: `${k}. ${GRADE_DEFS[k].label}`, desc: GRADE_DEFS[k].desc }))
+  );
+  return items.map((it) => `
+    <label class="grade-option">
+      <input type="radio" name="grade-radio" value="${it.value}" ${sel === it.value ? 'checked' : ''} />
+      <span class="grade-option-main"><strong>${escapeHTML(it.label)}</strong><span class="grade-option-desc">${escapeHTML(it.desc)}</span></span>
+    </label>`).join('');
+}
+
+let gradeModalCase = null;
+function openGradeModal(c) {
+  gradeModalCase = c;
+  document.getElementById('grade-modal-title').textContent = `${c.client_name} 고객등급`;
+  document.getElementById('grade-error').textContent = '';
+  const optionsEl = document.getElementById('grade-options');
+  optionsEl.innerHTML = buildGradeOptionsHTML(c.client_grade || '');
+  const dropWrap = document.getElementById('grade-drop-reason-wrap');
+  const dropSelect = document.getElementById('grade-drop-reason');
+  dropSelect.value = c.client_grade_reason || '';
+  dropWrap.classList.toggle('hidden', c.client_grade !== '5');
+  optionsEl.querySelectorAll('input[name="grade-radio"]').forEach((r) => {
+    r.addEventListener('change', () => {
+      dropWrap.classList.toggle('hidden', r.value !== '5');
+    });
+  });
+  document.getElementById('grade-modal').classList.remove('hidden');
+}
+document.getElementById('btn-close-grade').addEventListener('click', () => {
+  document.getElementById('grade-modal').classList.add('hidden');
+});
+document.getElementById('btn-save-grade').addEventListener('click', async () => {
+  const errorEl = document.getElementById('grade-error');
+  errorEl.textContent = '';
+  if (!gradeModalCase) return;
+  const checked = document.querySelector('input[name="grade-radio"]:checked');
+  const grade = checked ? checked.value : '';
+  const dropReason = document.getElementById('grade-drop-reason').value;
+  if (grade === '5' && !dropReason) { errorEl.textContent = '드롭 사유를 선택해야 합니다.'; return; }
+
+  const btn = document.getElementById('btn-save-grade');
+  btn.disabled = true;
+  try {
+    const payload = { client_grade: grade, client_grade_reason: grade === '5' ? dropReason : '' };
+    const updated = await api(`/api/cases/${gradeModalCase.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    const idx = allCases.findIndex((x) => x.id === updated.id);
+    if (idx >= 0) allCases[idx] = updated;
+    document.getElementById('grade-modal').classList.add('hidden');
+    render();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function rowHTML(c, isAdmin) {
   const statusLabel = c.status || '미지정';
   const memoText = memoCellHTML(c);
   return `
@@ -401,6 +564,7 @@ function rowHTML(c) {
       <td class="muted">${escapeHTML(c.assignee_name || '-')}</td>
       <td class="muted">${escapeHTML(c.consult_date || '-')}</td>
       <td><span class="status-pill ${escapeHTML(statusLabel)}">${escapeHTML(statusLabel)}</span></td>
+      <td>${gradeCellHTML(c, isAdmin)}</td>
       <td class="memo-cell ${memoText ? '' : 'empty'}" data-memo-id="${c.id}">${memoText}</td>
       <td><button type="button" class="btn-secondary" data-report-edit-id="${c.id}" style="font-size:12px; padding:4px 10px;">✏️ 수정</button></td>
     </tr>`;
@@ -409,12 +573,20 @@ function rowHTML(c) {
 function render() {
   const q = (document.getElementById('search-input').value || '').trim().toLowerCase();
   const statusFilter = document.getElementById('status-filter').value;
+  const gradeFilter = document.getElementById('grade-filter').value;
 
   let filtered = allCases;
   if (statusFilter === 'active') {
     filtered = filtered.filter((c) => c.status === '상담중' || c.status === '접수전');
   } else if (statusFilter) {
     filtered = filtered.filter((c) => c.status === statusFilter);
+  }
+  // 등급 필터는 기본값이 "전체"(드롭도 포함)다 — 상태 필터와 마찬가지로 아무것도 숨기지 않는 게
+  // 기본이고, 필요할 때만 좁혀서 본다.
+  if (gradeFilter === 'none') {
+    filtered = filtered.filter((c) => !c.client_grade);
+  } else if (gradeFilter) {
+    filtered = filtered.filter((c) => c.client_grade === gradeFilter);
   }
   if (q) {
     filtered = filtered.filter((c) => (c.client_name || '').toLowerCase().includes(q));
@@ -440,7 +612,8 @@ function render() {
     return;
   }
   emptyNote.classList.add('hidden');
-  tbody.innerHTML = filtered.map(rowHTML).join('');
+  const isAdmin = !!(currentUser && currentUser.role === 'admin');
+  tbody.innerHTML = filtered.map((c) => rowHTML(c, isAdmin)).join('');
   tbody.querySelectorAll('[data-id]').forEach((row) => {
     row.addEventListener('click', () => {
       window.location.href = `/case-detail.html?id=${row.dataset.id}&from=consultations`;
@@ -451,6 +624,32 @@ function render() {
       e.stopPropagation();
       const c = filtered.find((x) => String(x.id) === cell.dataset.memoId);
       if (c && c.memo) openMemoModal(c);
+    });
+  });
+  // 고객등급 변경은 관리자만: 뷰 자체는 모든 직원에게 보이지만(오늘 누구에게 먼저 전화할지
+  // 판단하는 데 필요), 클릭해서 바꾸는 건 관리자 전용이다(서버 PATCH도 동일하게 강제).
+  if (isAdmin) {
+    tbody.querySelectorAll('[data-grade-id]').forEach((cell) => {
+      cell.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const c = filtered.find((x) => String(x.id) === cell.dataset.gradeId);
+        if (c) openGradeModal(c);
+      });
+    });
+  }
+  tbody.querySelectorAll('[data-alimtalk-id]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      btn.disabled = true;
+      try {
+        const updated = await api(`/api/cases/${btn.dataset.alimtalkId}/alimtalk-log`, { method: 'POST' });
+        const idx = allCases.findIndex((x) => x.id === updated.id);
+        if (idx >= 0) allCases[idx] = updated;
+        render();
+      } catch (err) {
+        alert(err.message);
+        btn.disabled = false;
+      }
     });
   });
   // 상담레포트 수정: consult-report.html을 ?edit=<사건ID>로 열면, 그 사건에 저장된 리포트
@@ -465,6 +664,7 @@ function render() {
 
 document.getElementById('search-input').addEventListener('input', render);
 document.getElementById('status-filter').addEventListener('change', render);
+document.getElementById('grade-filter').addEventListener('change', render);
 
 /* ---- 새 상담 등록 ---- */
 

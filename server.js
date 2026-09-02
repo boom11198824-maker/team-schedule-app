@@ -228,6 +228,7 @@ for (const col of [
   'consult_date TEXT', 'consult_report_json TEXT',
   'client_grade TEXT', 'client_grade_reason TEXT',
   'alimtalk_count INTEGER NOT NULL DEFAULT 0', 'alimtalk_last_sent TEXT',
+  'birth_date TEXT',
 ]) {
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN ${col}`);
@@ -252,6 +253,12 @@ db.exec("UPDATE cases SET updated_at = created_at WHERE updated_at IS NULL");
 const CLIENT_GRADES = ['0', '1', '2', '3', '4', '5'];
 // 드롭(5) 처리 시 선택하는 사유. 추후 상담→계약 전환율 분석(상담 100건 중 왜 20건만 계약됐는지 등)에 쓰인다.
 const DROP_REASONS = ['연락두절', '비용', '타사선임', '진행의사없음', '자격미달', '시기미정', '기타'];
+
+// birth_date(생년월일, yyyy-mm-dd): 의뢰인용 진행현황 페이지(/client-status.html →
+// POST /api/portal/status)에서 "이름+생년월일"로 본인 사건만 조회하게 해주는 본인확인용 값.
+// 기존 사건에는 값이 비어있으므로, 사건상세 화면에서 관리자가 직접 입력해야 그 의뢰인부터
+// 조회 기능을 쓸 수 있다 (일괄 소급입력은 하지 않음 — 잘못된 사람 손에 넘어가면 안 되는 값이라
+// 반드시 담당자가 사건별로 직접 확인하며 입력하도록 한다).
 
 // consult_date(상담일) vs intake_date(접수일, 법원 접수 시점)는 서로 다른 개념인데, 예전엔
 // consult-report.html이 상담일을 intake_date 칸에 그대로 써넣어서 나중에 접수일을 입력/수정하면
@@ -298,6 +305,32 @@ CREATE TABLE IF NOT EXISTS case_files (
 );
 CREATE INDEX IF NOT EXISTS idx_case_files_case_id ON case_files(case_id);
 `);
+
+// 의뢰인용 진행현황(client-status.html) 타임라인의 원본 기록. current_stage(사건상세의 단일 "현재단계"
+// select, 6단계)와는 완전히 별개의 새 데이터다 — 기존 값을 건드리면 이미 저장된 사건들의 단계가
+// 조용히 지워질 위험이 있어(옵션 목록이 바뀌면 select가 빈 값이 되고, 그대로 저장하면 덮어써진다),
+// 아예 새 테이블로 분리했다. 한 사건이 같은 단계를 여러 번 기록할 수 있다 — 보정권고송달/제출처럼
+// 절차상 여러 차례 반복되는 단계는 그때마다 새 행을 추가하면 그게 곧 "n회차"가 된다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS case_stage_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL,
+  stage TEXT NOT NULL,
+  event_date TEXT NOT NULL,
+  created_by INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (case_id) REFERENCES cases(id),
+  FOREIGN KEY (created_by) REFERENCES employees(id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_stage_events_case_id ON case_stage_events(case_id);
+`);
+
+// 사건유형별 의뢰인용 타임라인 단계 목록(순서 = 진행 순서). 현재는 개인회생만 절차를 정확히 알고
+// 있어 우선 반영했다 — 다른 사건유형은 이 목록에 없으므로 client-status.html에서 기존 방식대로
+// "진행 단계(상태 배지) + 다음 일정"으로만 보여준다(4-5: 기존 기능을 깨지 않는다).
+const CASE_STAGE_TIMELINE = {
+  '개인회생': ['서류발급중', '신청서작성중', '접수완료', '금지명령신청', '보정권고송달', '보정권고제출', '개시결정', '채권자집회', '인가결정'],
+};
 
 // 수임료: 사건당 총액 1건 + 회차별 분할납부 내역
 db.exec(`
@@ -1301,8 +1334,14 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
   const {
     client_name, phone, court, court_case_no, assignee_name, memo, case_type, intake_date, consult_date, assigned_lawyer, current_stage, status,
     seal_received, seal_received_date, cert_usb_received, cert_usb_received_date, region, consult_report_json,
-    client_grade, client_grade_reason,
+    client_grade, client_grade_reason, birth_date,
   } = req.body || {};
+
+  // 생년월일은 의뢰인용 진행현황 조회의 본인확인 값이라 형식이 어긋나면 그 즉시 조회 불가로
+  // 이어진다 — 자유형식으로 저장하지 않고 다른 날짜칸(상담일/접수일 등)과 동일한 yyyy-mm-dd만 허용한다.
+  if (birth_date !== undefined && birth_date !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(birth_date)) {
+    return res.status(400).json({ error: '생년월일은 yyyy-mm-dd 형식으로 입력해주세요.' });
+  }
 
   // 고객등급/드롭사유는 관리자만 수정 가능 — 요청에 값이 담겨 있는데 관리자가 아니면 요청 전체를 거부한다
   // (일부만 조용히 무시하면 "분명 저장했는데 안 바뀌었다"는 혼란을 만들 수 있어서).
@@ -1345,16 +1384,17 @@ app.patch('/api/cases/:id', requireLogin, (req, res) => {
     consult_report_json: consult_report_json ?? existing.consult_report_json,
     client_grade: finalGrade ?? existing.client_grade,
     client_grade_reason: resolvedGradeReason,
+    birth_date: birth_date ?? existing.birth_date,
   };
   db.prepare(`UPDATE cases SET client_name=?, phone=?, court=?, court_case_no=?, assignee_name=?, memo=?, case_type=?, intake_date=?, consult_date=?, assigned_lawyer=?, current_stage=?, status=?,
               seal_received=?, seal_received_date=?, cert_usb_received=?, cert_usb_received_date=?, region=?, consult_report_json=?,
-              client_grade=?, client_grade_reason=?, updated_at=datetime('now') WHERE id = ?`)
+              client_grade=?, client_grade_reason=?, birth_date=?, updated_at=datetime('now') WHERE id = ?`)
     .run(
       updated.client_name, updated.phone, updated.court, updated.court_case_no, updated.assignee_name, updated.memo,
       updated.case_type, updated.intake_date, updated.consult_date, updated.assigned_lawyer, updated.current_stage, updated.status,
       updated.seal_received, updated.seal_received_date, updated.cert_usb_received, updated.cert_usb_received_date,
       updated.region, updated.consult_report_json,
-      updated.client_grade, updated.client_grade_reason,
+      updated.client_grade, updated.client_grade_reason, updated.birth_date,
       existing.id
     );
 
@@ -1387,6 +1427,7 @@ app.delete('/api/cases/:id', requireLogin, async (req, res) => {
   db.prepare('DELETE FROM case_fee_installments WHERE case_id = ?').run(existing.id);
   db.prepare('DELETE FROM case_fees WHERE case_id = ?').run(existing.id);
   db.prepare('DELETE FROM case_files WHERE case_id = ?').run(existing.id);
+  db.prepare('DELETE FROM case_stage_events WHERE case_id = ?').run(existing.id);
   db.prepare('DELETE FROM cases WHERE id = ?').run(existing.id);
 
   const filesDir = path.join(UPLOADS_DIR, `case-${existing.id}`);
@@ -1455,6 +1496,41 @@ app.delete('/api/case-files/:fileId', requireAdmin, (req, res) => {
   try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (err) { console.error('첨부파일 삭제 실패:', err.message); }
   db.prepare('DELETE FROM case_files WHERE id = ?').run(file.id);
 
+  res.json({ ok: true });
+});
+
+/* ---- /api/cases/:id/stage-events (의뢰인용 진행현황 타임라인 기록) ---- */
+
+app.get('/api/cases/:id/stage-events', requireLogin, (req, res) => {
+  const existing = db.prepare('SELECT id FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+  const events = db.prepare('SELECT * FROM case_stage_events WHERE case_id = ? ORDER BY event_date ASC, id ASC').all(req.params.id);
+  res.json(events);
+});
+
+app.post('/api/cases/:id/stage-events', requireLogin, (req, res) => {
+  const existing = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '사건을 찾을 수 없습니다.' });
+
+  const { stage, event_date } = req.body || {};
+  const allowedStages = CASE_STAGE_TIMELINE[existing.case_type] || [];
+  if (!allowedStages.includes(stage)) {
+    return res.status(400).json({ error: '이 사건유형에서는 사용할 수 없는 단계입니다.' });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(event_date || '')) {
+    return res.status(400).json({ error: '날짜는 yyyy-mm-dd 형식으로 입력해주세요.' });
+  }
+
+  const info = db
+    .prepare('INSERT INTO case_stage_events (case_id, stage, event_date, created_by) VALUES (?, ?, ?, ?)')
+    .run(existing.id, stage, event_date, req.user.id);
+  res.status(201).json(db.prepare('SELECT * FROM case_stage_events WHERE id = ?').get(info.lastInsertRowid));
+});
+
+app.delete('/api/case-stage-events/:eventId', requireLogin, (req, res) => {
+  const event = db.prepare('SELECT * FROM case_stage_events WHERE id = ?').get(req.params.eventId);
+  if (!event) return res.status(404).json({ error: '기록을 찾을 수 없습니다.' });
+  db.prepare('DELETE FROM case_stage_events WHERE id = ?').run(event.id);
   res.json({ ok: true });
 });
 
@@ -3476,6 +3552,110 @@ async function sendPushToAll(payload) {
     }
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* 의뢰인용 진행현황 조회 (로그인 불필요 — 이 파일에서 유일하게 세션 인증을    */
+/* 요구하지 않는 구간. 이름+생년월일만으로 본인 사건 하나만 조회하게 하고,     */
+/* 상태/다음 일정 외에는 아무것도 내려주지 않는다.)                          */
+/* ------------------------------------------------------------------ */
+
+// 무차별 대입(같은 이름으로 생년월일을 계속 바꿔가며 시도) 방지용 요청 횟수 제한.
+// IP별 최근 시도 시각을 메모리에만 들고 있는다 — 재배포/재시작되면 초기화되지만, 이 정도
+// 시도-횟수 제한에는 별도 DB나 외부 저장소를 새로 둘 만큼의 무게가 필요하지 않다.
+const portalAttempts = new Map(); // ip -> [timestamp, ...]
+const PORTAL_LIMIT_PER_MIN = 5;
+const PORTAL_LIMIT_PER_HOUR = 20;
+
+function checkPortalRateLimit(ip) {
+  const now = Date.now();
+  const recent = (portalAttempts.get(ip) || []).filter((t) => now - t < 60 * 60 * 1000);
+  const lastMinute = recent.filter((t) => now - t < 60 * 1000).length;
+  if (lastMinute >= PORTAL_LIMIT_PER_MIN || recent.length >= PORTAL_LIMIT_PER_HOUR) {
+    portalAttempts.set(ip, recent);
+    return false;
+  }
+  recent.push(now);
+  portalAttempts.set(ip, recent);
+  return true;
+}
+// 오래된 IP 기록이 메모리에 계속 쌓이지 않도록 주기적으로 정리한다.
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, list] of portalAttempts.entries()) {
+    const fresh = list.filter((t) => now - t < 60 * 60 * 1000);
+    if (fresh.length) portalAttempts.set(ip, fresh);
+    else portalAttempts.delete(ip);
+  }
+}, 10 * 60 * 1000).unref();
+
+app.post('/api/portal/status', (req, res) => {
+  const ip = req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+  if (!checkPortalRateLimit(ip)) {
+    return res.status(429).json({ error: '시도 횟수를 초과했습니다. 잠시 후 다시 시도해주세요.' });
+  }
+
+  const name = String((req.body && req.body.name) || '').trim();
+  const birthDate = String((req.body && req.body.birth_date) || '').trim();
+  if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) {
+    return res.status(400).json({ error: '이름과 생년월일을 정확히 입력해주세요.' });
+  }
+
+  const nameKey = normalizeMatchKey(name);
+  const candidates = db.prepare('SELECT * FROM cases WHERE birth_date = ?').all(birthDate)
+    .filter((c) => normalizeMatchKey(c.client_name) === nameKey);
+
+  // 이름이 틀렸는지 생년월일이 틀렸는지, 혹은 아직 사무소에서 생년월일을 등록해두지 않았는지
+  // 구분해서 알려주지 않는다 — 어느 쪽이든 외부에서는 "일치 정보 없음"으로만 보여야 한다.
+  // 동명이인+동일 생년월일이 우연히 겹치는 경우도 이론상 있을 수 있으므로, 그럴 때도 추측해서
+  // 아무 사건이나 보여주지 않고 안내만 한다.
+  if (candidates.length !== 1) {
+    return res.status(404).json({ error: '일치하는 사건을 찾을 수 없습니다. 담당 사무소로 문의해주세요.' });
+  }
+
+  const matched = candidates[0];
+  const nextTask = db
+    .prepare(`SELECT task_type, due_date FROM case_tasks WHERE case_id = ? AND due_date >= date('now') ORDER BY due_date ASC LIMIT 1`)
+    .get(matched.id);
+
+  // 사건유형별 세로 타임라인(현재는 개인회생만) — 각 단계에 기록된 날짜(들)를 붙이고, 기록이 있는
+  // 단계 중 목록상 가장 뒤에 있는 것을 "현재 단계"로 본다. 반복되는 단계(보정권고송달/제출)는
+  // dates 배열에 여러 값이 그대로 담겨 나간다(=n회차를 그대로 보여줄 수 있음).
+  const allowedStages = CASE_STAGE_TIMELINE[matched.case_type] || [];
+  let timeline = null;
+  if (allowedStages.length) {
+    const events = db
+      .prepare('SELECT stage, event_date FROM case_stage_events WHERE case_id = ? ORDER BY event_date ASC, id ASC')
+      .all(matched.id);
+    const datesByStage = {};
+    events.forEach((e) => { (datesByStage[e.stage] = datesByStage[e.stage] || []).push(e.event_date); });
+    let currentIndex = -1;
+    allowedStages.forEach((s, i) => { if (datesByStage[s] && datesByStage[s].length) currentIndex = i; });
+    timeline = allowedStages.map((s, i) => ({
+      stage: s,
+      dates: datesByStage[s] || [],
+      reached: i <= currentIndex,
+      current: i === currentIndex,
+    }));
+  }
+
+  // 응답은 의도적으로 이 값들만 준다 — 메모/담당자/파일/고객등급/수임료 등은 절대 포함하지 않는다.
+  // court/case_type/court_case_no는 의뢰인 본인도 이미 알고 있는(계약 시 안내받은) 사건 식별 정보라
+  // 노출 대상에 포함한다 — client-status.html의 "사건 기본정보" 카드 제목에 그대로 쓰인다.
+  // timeline이 없는 사건유형(개인회생 외)은 기존 방식대로 status 배지 + 다음 일정만 내려간다.
+  res.json({
+    client_name: matched.client_name,
+    status: matched.status || '',
+    court: matched.court || '',
+    case_type: matched.case_type || '',
+    court_case_no: matched.court_case_no || '',
+    timeline,
+    next_task: nextTask ? { task_type: nextTask.task_type, due_date: nextTask.due_date } : null,
+  });
+});
+
+app.get('/client-status.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'client-status.html'));
+});
 
 /* ---- 정적 페이지 ---- */
 

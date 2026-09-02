@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>사건 진행현황 조회 · 법률사무소 법진</title>
+<style>
+:root {
+  /* 법진 공식 브랜드 컬러 (카드뉴스 등 다른 산출물과 동일한 원본 값) */
+  --navy:        #0D2268;
+  --navy-soft:   #16308C;   /* 완료 단계 등 살짝 옅은 네이비 */
+  --coral:       #FA5E47;
+  --coral-dark:  #E2472F;
+  --coral-tint:    rgba(250,94,71,0.10);
+  --coral-tint-bd: rgba(250,94,71,0.28);
+  --navy-tint:     rgba(13,34,104,0.06);
+  --navy-tint-bd:  rgba(13,34,104,0.14);
+
+  --bg:      #F6F7FA;
+  --card:    #FFFFFF;
+  --line:    #E7E9F0;
+  --ink:     #16203A;
+  --ink-2:   #5B6480;
+  --ink-mut: #9AA1B5;
+
+  --danger:    #D6394A;
+  --danger-bg: #FBE4E4;
+}
+* { box-sizing: border-box; }
+.hidden { display: none !important; }
+html, body { margin: 0; padding: 0; background: var(--bg); }
+body {
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Apple SD Gothic Neo", Roboto, sans-serif;
+  color: var(--ink);
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+/* ---- 상단 헤더: 짙은 네이비, 로고 없이 텍스트만 (요청사항) ---- */
+.topbar {
+  background: var(--navy);
+  color: #fff;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.topbar-title { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
+.topbar-sub { font-size: 11px; color: rgba(255,255,255,0.62); margin-top: 2px; }
+
+.page { max-width: 480px; margin: 0 auto; padding: 0 16px 32px; }
+
+/* ---- 인사 영역: 헤더 바로 아래 흰 배경 ---- */
+.hello {
+  padding: 20px 4px 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.hello-name { font-size: 19px; font-weight: 800; color: var(--navy); margin: 0; line-height: 1.35; }
+.hello-sub { font-size: 13px; color: var(--ink-2); margin: 4px 0 0; line-height: 1.5; }
+.btn-relookup {
+  flex-shrink: 0;
+  margin-top: 2px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--navy);
+  background: var(--navy-tint);
+  border: 1px solid var(--navy-tint-bd);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-relookup:hover { background: var(--navy-tint-bd); }
+
+/* ---- 공용 카드 ---- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 20px 18px;
+  box-shadow: 0 2px 10px rgba(13,34,104,0.05);
+  margin-bottom: 14px;
+}
+.card-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--navy);
+  margin: 0 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ---- 본인확인(조회) 카드 ---- */
+.lookup-card h1 { font-size: 17px; margin: 0 0 6px; color: var(--navy); }
+.lookup-card .sub { font-size: 13px; color: var(--ink-2); margin: 0 0 20px; line-height: 1.55; }
+label { display: block; font-size: 13px; font-weight: 700; color: var(--ink-2); margin-bottom: 6px; }
+.field { margin-bottom: 14px; }
+input[type="text"] {
+  width: 100%;
+  padding: 13px 14px;
+  font-size: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--ink);
+}
+input[type="text"]:focus { outline: none; border-color: var(--coral); background: white; }
+.btn-submit {
+  width: 100%;
+  padding: 14px;
+  margin-top: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  color: white;
+  background: var(--coral);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.btn-submit:hover { background: var(--coral-dark); }
+.btn-submit:disabled { background: var(--ink-mut); cursor: default; }
+
+.error-msg {
+  font-size: 13px;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 0 0 14px;
+}
+
+/* ---- 사건 기본정보 카드 ---- */
+.info-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.phase-badge {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--coral-tint);
+  color: var(--coral-dark);
+  border: 1px solid var(--coral-tint-bd);
+}
+.phase-badge.st-navy { background: var(--navy-tint); color: var(--navy); border-color: var(--navy-tint-bd); }
+.stage-count {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12.5px; font-weight: 700; color: var(--coral-dark);
+}
+.stage-count .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--coral); }
+
+.case-title { font-size: 19px; font-weight: 800; color: var(--navy); margin: 0 0 3px; line-height: 1.35; }
+.case-no { font-size: 13px; color: var(--ink-mut); margin: 0; }
+
+.repay-grid { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.repay-row { display: flex; flex-direction: column; gap: 3px; padding: 8px 0; }
+.repay-row + .repay-row { border-top: 1px dashed var(--line); }
+.repay-row .repay-label { font-size: 11.5px; color: var(--ink-mut); font-weight: 600; }
+.repay-row .repay-value { font-size: 15px; color: var(--ink); font-weight: 800; }
+.repay-row.emph .repay-value { color: var(--coral-dark); }
+
+.info-note {
+  display: flex; gap: 8px; align-items: flex-start;
+  margin-top: 14px;
+  font-size: 12.5px; line-height: 1.5;
+  color: var(--navy);
+  background: var(--navy-tint);
+  border: 1px solid var(--navy-tint-bd);
+  border-radius: 10px;
+  padding: 11px 12px;
+}
+.info-note .ico { flex-shrink: 0; font-size: 13px; }
+
+/* ---- 진행현황 타임라인: 택배 배송조회 느낌으로 전 단계를 한 번에 보여준다 ---- */
+.timeline { margin-top: 2px; }
+.tl-item { display: flex; gap: 12px; border-radius: 10px; }
+.tl-item.current { background: var(--coral-tint); margin: 0 -8px; padding: 8px; }
+.tl-marker { display: flex; flex-direction: column; align-items: center; width: 22px; flex-shrink: 0; }
+.tl-dot {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--bg); border: 2px solid var(--line);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800; color: var(--ink-mut); flex-shrink: 0;
+}
+.tl-line { flex: 1; width: 2px; background: var(--line); margin: 2px 0; min-height: 22px; }
+.tl-item:last-child .tl-line { display: none; }
+.tl-body { padding-bottom: 20px; padding-top: 1px; }
+.tl-label { font-size: 14.5px; font-weight: 700; color: var(--ink-mut); transition: color .15s; }
+.tl-date { font-size: 12px; color: var(--ink-mut); margin-top: 3px; line-height: 1.5; }
+
+/* 완료 = 네이비 */
+.tl-item.done .tl-dot { background: var(--navy); border-color: var(--navy); color: #fff; }
+.tl-item.done .tl-line { background: var(--navy-soft); }
+.tl-item.done .tl-label { color: var(--ink); }
+.tl-item.done .tl-date { color: var(--ink-mut); }
+
+/* 현재 = 코랄, 가장 눈에 띄게 */
+.tl-item.current .tl-dot {
+  background: var(--coral); border-color: var(--coral); color: #fff;
+  box-shadow: 0 0 0 5px rgba(250,94,71,0.18);
+}
+.tl-item.current .tl-line { background: var(--line); }
+.tl-item.current .tl-label { color: var(--coral-dark); font-weight: 800; }
+.tl-item.current .tl-date { color: var(--coral-dark); font-weight: 700; }
+
+/* 예정 = 회색 (기본값) */
+
+.tl-date .scheduled-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-weight: 700; color: var(--coral-dark);
+  background: var(--coral-tint); border: 1px solid var(--coral-tint-bd);
+  padding: 2px 8px; border-radius: 999px;
+}
+
+/* ---- 단계 설명 아코디언 ---- */
+.stage-explain-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; margin-top: 8px; padding: 12px 2px 2px;
+  background: none; border: none; border-top: 1px dashed var(--line);
+  font-size: 13px; font-weight: 700; color: var(--ink-2);
+  cursor: pointer; text-align: left;
+}
+.stage-explain-toggle .chev { transition: transform .15s; font-size: 11px; color: var(--ink-mut); }
+.stage-explain-toggle.open .chev { transform: rotate(180deg); }
+.stage-explain-wrap { max-height: 0; overflow: hidden; transition: max-height .25s ease; }
+.stage-explain-wrap.open { max-height: 1200px; }
+.stage-explain-list { padding-top: 12px; }
+.stage-explain-item { padding: 9px 0; border-bottom: 1px solid var(--line); }
+.stage-explain-item:last-child { border-bottom: none; }
+.stage-explain-item .se-label { font-size: 12.5px; font-weight: 700; color: var(--navy); margin-bottom: 3px; }
+.stage-explain-item .se-desc { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+
+/* ---- 예정 일정 카드 ---- */
+.upcoming-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.upcoming-date { font-size: 17px; font-weight: 800; color: var(--coral-dark); }
+.upcoming-date .paren { font-size: 12px; font-weight: 700; margin-left: 4px; }
+.upcoming-name { font-size: 13.5px; color: var(--ink); font-weight: 600; margin-top: 3px; }
+.pill-scheduled {
+  flex-shrink: 0;
+  font-size: 11.5px; font-weight: 700;
+  color: var(--coral-dark);
+  background: var(--coral-tint); border: 1px solid var(--coral-tint-bd);
+  padding: 4px 10px; border-radius: 999px;
+}
+.upcoming-note { margin-top: 12px; font-size: 11.5px; color: var(--ink-mut); line-height: 1.55; }
+
+/* ---- 문의 카드 ---- */
+.contact-lead { font-size: 13px; color: var(--ink-2); margin: -4px 0 14px; line-height: 1.5; }
+.contact-buttons { display: flex; gap: 10px; }
+.btn-contact {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 14px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--navy);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+.btn-contact:hover { background: var(--navy-tint); }
+.btn-contact .ico { font-size: 18px; }
+
+.footnote { text-align: center; font-size: 11px; color: var(--ink-mut); margin-top: 6px; line-height: 1.6; padding: 0 4px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <div class="topbar-title">법률사무소 법진</div>
+    <div class="topbar-sub">사건 진행현황 조회</div>
+  </div>
+</div>
+
+<div class="page">
+
+  <!-- 조회 성공 후에만 보이는 인사 영역 -->
+  <div class="hello hidden" id="hello">
+    <div>
+      <p class="hello-name" id="hello-name"></p>
+      <p class="hello-sub">현재 진행 중인 사건의 진행현황을 확인하실 수 있습니다.</p>
+    </div>
+    <button type="button" class="btn-relookup" id="btn-relookup">다른 사건 조회</button>
+  </div>
+
+  <!-- 본인확인 카드 -->
+  <div class="card lookup-card" id="lookup-section">
+    <h1>본인 확인</h1>
+    <p class="sub">상담·계약 시 등록하신 <strong>의뢰인명</strong>과 <strong>생년월일</strong>을 입력하시면 사건 진행현황을 확인하실 수 있습니다.</p>
+
+    <form id="lookup-form">
+      <div class="field">
+        <label for="f-name">의뢰인명</label>
+        <input type="text" id="f-name" autocomplete="name" placeholder="예: 홍길동" required />
+      </div>
+      <div class="field">
+        <label for="f-birth">생년월일</label>
+        <input type="text" id="f-birth" class="date-field" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" required />
+      </div>
+      <button type="submit" class="btn-submit" id="btn-submit">조회하기</button>
+    </form>
+  </div>
+
+  <p class="error-msg hidden" id="error-msg"></p>
+
+  <div class="hidden" id="result">
+
+    <!-- 1. 사건 기본정보 (+ 변제 정보) -->
+    <div class="card">
+      <div class="info-top">
+        <span class="phase-badge" id="phase-badge"></span>
+        <span class="stage-count hidden" id="stage-count"><span class="dot"></span><span id="stage-count-text"></span></span>
+      </div>
+      <p class="case-title" id="case-title"></p>
+      <p class="case-no" id="case-no"></p>
+
+      <div class="repay-grid hidden" id="repay-grid">
+        <div class="repay-row emph"><span class="repay-label">월 변제금</span><span class="repay-value" id="repay-amount"></span></div>
+        <div class="repay-row"><span class="repay-label">마지막 납부일</span><span class="repay-value" id="repay-last-date"></span></div>
+        <div class="repay-row"><span class="repay-label">입금계좌</span><span class="repay-value" id="repay-account"></span></div>
+      </div>
+
+      <div class="info-note hidden" id="info-note">
+        <span class="ico">ⓘ</span>
+        <span>매월 말일까지 납부해 주시기 바랍니다.</span>
+      </div>
+    </div>
+
+    <!-- 2. 진행현황 타임라인 -->
+    <div class="card hidden" id="timeline-card">
+      <p class="card-title">진행현황</p>
+      <div class="timeline" id="timeline"></div>
+
+      <button type="button" class="stage-explain-toggle" id="stage-explain-toggle">
+        <span>각 단계가 궁금하신가요?</span>
+        <span class="chev">▾</span>
+      </button>
+      <div class="stage-explain-wrap" id="stage-explain-wrap">
+        <div class="stage-explain-list" id="stage-explain-list"></div>
+      </div>
+    </div>
+
+    <!-- 3. 예정 일정 -->
+    <div class="card hidden" id="upcoming-card">
+      <p class="card-title">예정 일정</p>
+      <div class="upcoming-row">
+        <div>
+          <div class="upcoming-date" id="upcoming-date"></div>
+          <div class="upcoming-name" id="upcoming-name"></div>
+        </div>
+        <span class="pill-scheduled">예정</span>
+      </div>
+      <p class="upcoming-note">※ 일정은 변경될 수 있으며, 변경 시 안내해 드리겠습니다.</p>
+    </div>
+
+    <!-- 4. 문의 -->
+    <div class="card">
+      <p class="card-title">궁금하신 점이 있으신가요?</p>
+      <p class="contact-lead">담당자에게 언제든 문의하세요.</p>
+      <div class="contact-buttons">
+        <a class="btn-contact" id="btn-call" href="#"><span class="ico">📞</span><span>전화 문의</span></a>
+        <a class="btn-contact" id="btn-chat" href="#"><span class="ico">💬</span><span>문자/카카오톡 문의</span></a>
+      </div>
+    </div>
+
+  </div>
+
+  <p class="footnote">본 화면은 담당자에게 등록된 이름·생년월일이 정확히 일치할 때만 조회됩니다.<br />내용이 다르거나 문의사항이 있으시면 담당 사무소로 연락해주세요.</p>
+</div>
+
+<script>
+/* ---- 입력 유틸 (기존과 동일) ---- */
+function maskDateInput(el) {
+  el.addEventListener('input', () => {
+    const digits = el.value.replace(/\D/g, '').slice(0, 8);
+    let out = digits;
+    if (digits.length > 4) out = digits.slice(0, 4) + '-' + digits.slice(4);
+    if (digits.length > 6) out = digits.slice(0, 4) + '-' + digits.slice(4, 6) + '-' + digits.slice(6);
+    el.value = out;
+  });
+}
+document.querySelectorAll('input.date-field').forEach(maskDateInput);
+
+function isValidDateStr(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+}
+function formatDot(dateStr) {
+  return (dateStr || '').replace(/-/g, '.');
+}
+
+/* ---- 서버(server.js CASE_STAGE_TIMELINE) 원본 키 → 화면 표기 (기존과 동일한 매핑, 데이터 자체는 안 건드림) ---- */
+const STATUS_LABELS = {
+  '상담중': '상담중',
+  '접수전': '접수 준비 중',
+  '사건진행중': '사건 진행 중',
+  '개시결정후': '개시결정 완료',
+};
+const STAGE_DISPLAY_LABELS = {
+  '서류발급중': '서류 발급 중',
+  '신청서작성중': '신청서 작성 중',
+  '접수완료': '사건 접수 완료',
+  '금지명령신청': '금지명령 신청',
+  '보정권고송달': '보정권고 송달',
+  '보정권고제출': '보정권고 제출',
+  '개시결정': '개시 결정',
+  '채권자집회': '채권자집회',
+  '인가결정': '인가결정',
+};
+// 각 단계에 대한 일반적인 절차 설명(개인회생 제도 자체에 대한 공개된 절차 설명 — 사건별 개별
+// 정보 아님). "각 단계가 궁금하신가요?" 아코디언에 그대로 노출된다.
+const STAGE_EXPLANATIONS = {
+  '서류발급중': '개인회생 신청에 필요한 소득·재산 관련 서류(가족관계증명서, 소득 증빙, 채권자목록 등)를 준비하는 단계입니다.',
+  '신청서작성중': '준비된 서류를 바탕으로 개인회생 신청서와 변제계획안을 작성하는 단계입니다.',
+  '접수완료': '작성된 신청서류가 관할 법원에 정식으로 접수된 단계입니다.',
+  '금지명령신청': '접수 이후 채권자의 추심·강제집행을 막기 위해 법원에 금지명령을 신청하는 단계입니다.',
+  '보정권고송달': '법원이 신청서류를 검토한 뒤 보완이 필요한 사항을 보정권고서로 안내하는 단계입니다.',
+  '보정권고제출': '법원의 보정권고에 따라 보완된 서류를 다시 제출하는 단계입니다.',
+  '개시결정': '법원이 개인회생 절차 개시를 정식으로 결정하는 단계입니다. 이후 변제계획에 따른 납부가 시작됩니다.',
+  '채권자집회': '개시결정 이후 채권자들의 의견을 듣는 절차로, 법원이 지정한 기일에 진행됩니다.',
+  '인가결정': '채권자집회 이후 법원이 변제계획을 최종 인가하는 단계입니다. 이후 계획대로 납부를 완료하면 절차가 종료됩니다.',
+};
+// 상단 배지에 쓰는 넓은 단계 그룹명 — 9단계 각각이 아니라 "지금 대략 어느 국면인지"를 짧게 알려준다.
+function phaseBadgeLabel(stageKey, hasRepayment) {
+  if (hasRepayment) return '개시결정 이후 단계';
+  if (stageKey === '개시결정') return '개시결정 단계';
+  if (stageKey === '보정권고송달' || stageKey === '보정권고제출') return '법원 심사 단계';
+  if (stageKey === '채권자집회' || stageKey === '인가결정') return '절차 진행 단계';
+  return '신청 준비 단계';
+}
+
+function stageDateText(dates) {
+  if (!dates || !dates.length) return '';
+  if (dates.length === 1) return `${formatDot(dates[0])}자`;
+  return dates.map((d, i) => `${i + 1}회차 ${formatDot(d)}자`).join('<br />');
+}
+
+function tlItemHTML(t, index) {
+  const cls = t.current ? 'current' : (t.reached ? 'done' : '');
+  const label = STAGE_DISPLAY_LABELS[t.stage] || t.stage;
+  let dateHTML = '';
+  if (t.dates && t.dates.length) {
+    dateHTML = `<div class="tl-date">${stageDateText(t.dates)}</div>`;
+  } else if (!t.reached && t.scheduled_date) {
+    dateHTML = `<div class="tl-date"><span class="scheduled-badge">예정 · ${formatDot(t.scheduled_date)}</span></div>`;
+  }
+  const dotContent = t.reached && !t.current ? '✓' : String(index + 1);
+  return `
+    <div class="tl-item ${cls}">
+      <div class="tl-marker">
+        <div class="tl-dot">${dotContent}</div>
+        <div class="tl-line"></div>
+      </div>
+      <div class="tl-body">
+        <div class="tl-label">${index + 1}. ${label}</div>
+        ${dateHTML}
+      </div>
+    </div>`;
+}
+
+// 택배 배송조회처럼 완료→현재→예정 전 단계를 한 번에 다 보여준다(과거 단계를 접어두던 방식에서
+// 이번 리디자인으로 변경 — 한눈에 전체 여정이 보이는 쪽이 이 화면의 목적에 더 맞는다고 판단).
+function renderTimeline(timeline) {
+  document.getElementById('timeline').innerHTML = timeline.map(tlItemHTML).join('');
+
+  const list = document.getElementById('stage-explain-list');
+  list.innerHTML = timeline.map((t) => {
+    const label = STAGE_DISPLAY_LABELS[t.stage] || t.stage;
+    const desc = STAGE_EXPLANATIONS[t.stage] || '';
+    return `<div class="stage-explain-item"><div class="se-label">${label}</div><div class="se-desc">${desc}</div></div>`;
+  }).join('');
+}
+
+document.getElementById('stage-explain-toggle').addEventListener('click', () => {
+  document.getElementById('stage-explain-toggle').classList.toggle('open');
+  document.getElementById('stage-explain-wrap').classList.toggle('open');
+});
+
+const form = document.getElementById('lookup-form');
+const errorEl = document.getElementById('error-msg');
+const resultEl = document.getElementById('result');
+const helloEl = document.getElementById('hello');
+const btn = document.getElementById('btn-submit');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  errorEl.classList.add('hidden');
+  resultEl.classList.add('hidden');
+
+  const name = document.getElementById('f-name').value.trim();
+  const birth = document.getElementById('f-birth').value.trim();
+  if (!name || !isValidDateStr(birth)) {
+    errorEl.textContent = '의뢰인명과 생년월일(yyyy-mm-dd)을 정확히 입력해주세요.';
+    errorEl.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '조회 중…';
+  try {
+    const res = await fetch('/api/portal/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, birth_date: birth }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || '조회 중 오류가 발생했습니다.');
+    }
+
+    document.getElementById('hello-name').textContent = `${data.client_name}님, 좋은 하루 되세요.`;
+    document.getElementById('case-title').textContent =
+      [data.court, data.case_type].filter(Boolean).join(' ') || '사건 정보';
+    document.getElementById('case-no').textContent = data.court_case_no || '사건번호 미등록';
+
+    const timelineCard = document.getElementById('timeline-card');
+    const upcomingCard = document.getElementById('upcoming-card');
+    const phaseBadge = document.getElementById('phase-badge');
+    const stageCount = document.getElementById('stage-count');
+    const repayGrid = document.getElementById('repay-grid');
+    const infoNote = document.getElementById('info-note');
+
+    // 개시결정 이후 변제 정보 — 실제 데이터가 내려온 사건만 표시된다(현재 백엔드에는 아직
+    // 미연결 — data.repayment가 없으면 이 영역 전체가 조용히 숨겨진다).
+    if (data.repayment) {
+      document.getElementById('repay-amount').textContent = data.repayment.monthly_amount;
+      document.getElementById('repay-last-date').textContent = data.repayment.last_due_date;
+      document.getElementById('repay-account').textContent = data.repayment.deposit_account;
+      repayGrid.classList.remove('hidden');
+      infoNote.classList.remove('hidden');
+    } else {
+      repayGrid.classList.add('hidden');
+      infoNote.classList.add('hidden');
+    }
+
+    if (data.timeline && data.timeline.length) {
+      // 단계별 세부 타임라인이 있는 사건유형(현재는 개인회생)
+      renderTimeline(data.timeline);
+      timelineCard.classList.remove('hidden');
+
+      const currentIdx = data.timeline.findIndex((t) => t.current);
+      const currentStage = currentIdx >= 0 ? data.timeline[currentIdx].stage : null;
+      phaseBadge.textContent = currentStage ? phaseBadgeLabel(currentStage, !!data.repayment) : '진행 확인 중';
+      phaseBadge.className = 'phase-badge';
+      if (currentIdx >= 0) {
+        stageCount.classList.remove('hidden');
+        document.getElementById('stage-count-text').textContent = `${currentIdx + 1}단계 진행 중`;
+      } else {
+        stageCount.classList.add('hidden');
+      }
+
+      // 예정 일정 카드: 타임라인 안에서 아직 도달하지 않았지만 날짜가 이미 잡힌 단계(예: 개시결정
+      // 후 확정되는 채권자집회)가 있으면 그걸 보여준다. 현재 백엔드는 이 값을 아직 내려주지 않으므로
+      // 실제 운영에서는 해당 데이터가 연결된 사건에서만 이 카드가 나타난다.
+      const scheduled = data.timeline.find((t) => !t.reached && t.scheduled_date);
+      if (scheduled) {
+        document.getElementById('upcoming-date').textContent = `${formatDot(scheduled.scheduled_date)} (예정)`;
+        document.getElementById('upcoming-name').textContent = STAGE_DISPLAY_LABELS[scheduled.stage] || scheduled.stage;
+        upcomingCard.classList.remove('hidden');
+      } else {
+        upcomingCard.classList.add('hidden');
+      }
+    } else {
+      // 타임라인이 없는 사건유형은 기존 방식대로 상태 배지 + 다음 일정(case_tasks 실제 데이터)을 보여준다.
+      timelineCard.classList.add('hidden');
+      const label = STATUS_LABELS[data.status] || data.status || '단계 미지정';
+      phaseBadge.textContent = label;
+      phaseBadge.className = 'phase-badge' + (data.status === '개시결정후' ? '' : ' st-navy');
+      stageCount.classList.add('hidden');
+
+      if (data.next_task) {
+        document.getElementById('upcoming-date').textContent = `${formatDot(data.next_task.due_date)} (예정)`;
+        document.getElementById('upcoming-name').textContent = data.next_task.task_type;
+        upcomingCard.classList.remove('hidden');
+      } else {
+        upcomingCard.classList.add('hidden');
+      }
+    }
+
+    // 지금 이 결과가 보인다는 것 자체가 이름+생년월일이 이미 일치했다는 뜻이므로, 입력폼은
+    // 더 이상 화면에 남겨둘 필요가 없다.
+    document.getElementById('lookup-section').classList.add('hidden');
+    helloEl.classList.remove('hidden');
+    resultEl.classList.remove('hidden');
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '조회하기';
+  }
+});
+
+document.getElementById('btn-relookup').addEventListener('click', resetToLookup);
+function resetToLookup() {
+  form.reset();
+  resultEl.classList.add('hidden');
+  helloEl.classList.add('hidden');
+  errorEl.classList.add('hidden');
+  document.getElementById('stage-explain-toggle').classList.remove('open');
+  document.getElementById('stage-explain-wrap').classList.remove('open');
+  document.getElementById('lookup-section').classList.remove('hidden');
+  document.getElementById('f-name').focus();
+}
+
+/* 문의 버튼: 실제 전화번호/카카오톡 채널 링크는 아직 연결되지 않았다 — 사무소에서 받는 대로
+   href를 채워 넣으면 된다(연결 전까지는 클릭해도 아무 동작 없이 페이지 상단으로 이동만 한다). */
+document.getElementById('btn-call').addEventListener('click', (e) => { e.preventDefault(); });
+document.getElementById('btn-chat').addEventListener('click', (e) => { e.preventDefault(); });
+</script>
+</body>
+</html>

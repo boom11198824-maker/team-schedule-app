@@ -249,6 +249,13 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
           </div>
           <div class="row">
             <div>
+              <label>생년월일</label>
+              <input type="text" class="date-field" id="f-birth-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+              <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">※ 의뢰인용 진행현황 조회(이름+생년월일 본인확인)에 사용됩니다. 입력해야 그 의뢰인이 조회할 수 있습니다.</p>
+            </div>
+          </div>
+          <div class="row">
+            <div>
               <label>담당직원</label>
               <input type="text" id="f-assignee" placeholder="예: 진홍" />
             </div>
@@ -292,6 +299,33 @@ input.money-field { text-align: right; font-variant-numeric: tabular-nums; }
             <button type="submit" class="btn-primary">저장</button>
           </div>
         </form>
+      </div>
+
+      <!-- 의뢰인용 진행현황 타임라인 기록 (현재는 개인회생만 지원 — 다른 사건유형은 이 카드 자체가 숨겨짐) -->
+      <div class="card hidden" id="stage-event-card">
+        <h3>진행단계 기록 (의뢰인 조회용)</h3>
+        <p style="font-size:11px; color:var(--text-muted); margin:0 0 12px;">※ 여기 기록한 날짜가 의뢰인용 진행현황 화면(/client-status.html)에 그대로 표시됩니다. 보정권고송달/제출처럼 여러 번 반복되는 단계는 그때마다 새로 추가하면 됩니다(=n회차). 잘못 기록했을 때만 삭제하고, 정정은 삭제 후 다시 추가해주세요.</p>
+        <div id="stage-event-list"></div>
+        <p id="stage-event-empty-note" class="empty-note hidden">기록된 단계가 없습니다.</p>
+
+        <div class="mini-form">
+          <div class="mini-form-title">단계 기록 추가</div>
+          <div class="row">
+            <div>
+              <label>단계 *</label>
+              <select id="stage-event-stage"></select>
+            </div>
+            <div>
+              <label>날짜 *</label>
+              <input type="text" class="date-field" id="stage-event-date" placeholder="yyyy-mm-dd" pattern="\d{4}-\d{2}-\d{2}" inputmode="numeric" maxlength="10" />
+            </div>
+          </div>
+          <p id="stage-event-error" class="error-text"></p>
+          <div class="actions-row">
+            <div class="spacer"></div>
+            <button type="button" class="btn-primary" id="btn-add-stage-event">기록 추가</button>
+          </div>
+        </div>
       </div>
 
       <!-- 메모 (누적 기록 - 한 번 남기면 수정/삭제 불가) -->
@@ -678,6 +712,82 @@ function renderStageSelect(caseType, selected) {
 
 document.getElementById('f-case-type').addEventListener('input', (e) => renderStageSelect(e.target.value));
 
+/* ---- 의뢰인용 진행현황 타임라인 기록 ----
+   server.js의 CASE_STAGE_TIMELINE과 동일한 목록을 그대로 들고 있는다(원본은 서버 — 여기 목록을
+   실수로 다르게 고치면 저장 시 서버가 400으로 거절한다). 현재는 개인회생만 지원. */
+const CLIENT_TIMELINE_STAGES = {
+  '개인회생': ['서류발급중', '신청서작성중', '접수완료', '금지명령신청', '보정권고송달', '보정권고제출', '개시결정', '채권자집회', '인가결정'],
+};
+
+function stageEventItemHTML(e) {
+  return `
+    <div class="note-item">
+      <div class="note-meta">${escapeHTML(e.event_date)}</div>
+      <div class="note-content">${escapeHTML(e.stage)}
+        <button type="button" class="btn-small" data-delete-stage-event="${e.id}" style="margin-left:8px;">삭제</button>
+      </div>
+    </div>`;
+}
+
+async function renderStageEvents() {
+  const card = document.getElementById('stage-event-card');
+  const stages = CLIENT_TIMELINE_STAGES[(currentCase && currentCase.case_type) || ''] || [];
+  if (!stages.length) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+
+  const select = document.getElementById('stage-event-stage');
+  select.innerHTML = stages.map((s) => `<option value="${escapeHTML(s)}">${escapeHTML(s)}</option>`).join('');
+
+  const list = document.getElementById('stage-event-list');
+  const emptyNote = document.getElementById('stage-event-empty-note');
+  let events = [];
+  try { events = await api(`/api/cases/${caseId}/stage-events`); } catch (err) {
+    list.innerHTML = '';
+    emptyNote.textContent = err.message;
+    emptyNote.classList.remove('hidden');
+    return;
+  }
+  if (!events.length) {
+    list.innerHTML = '';
+    emptyNote.classList.remove('hidden');
+    return;
+  }
+  emptyNote.classList.add('hidden');
+  list.innerHTML = events.map(stageEventItemHTML).join('');
+  list.querySelectorAll('[data-delete-stage-event]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('이 기록을 삭제할까요?')) return;
+      try {
+        await api(`/api/case-stage-events/${btn.dataset.deleteStageEvent}`, { method: 'DELETE' });
+        await renderStageEvents();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+}
+
+document.getElementById('btn-add-stage-event').addEventListener('click', async () => {
+  const errorEl = document.getElementById('stage-event-error');
+  errorEl.textContent = '';
+  const stage = document.getElementById('stage-event-stage').value;
+  const date = document.getElementById('stage-event-date').value;
+  if (!stage) { errorEl.textContent = '단계를 선택해주세요.'; return; }
+  if (!isValidDateStr(date)) { errorEl.textContent = '날짜는 yyyy-mm-dd 형식으로 입력해주세요.'; return; }
+
+  const btn = document.getElementById('btn-add-stage-event');
+  btn.disabled = true;
+  try {
+    await api(`/api/cases/${caseId}/stage-events`, { method: 'POST', body: JSON.stringify({ stage, event_date: date }) });
+    document.getElementById('stage-event-date').value = '';
+    await renderStageEvents();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // "서류/보정일정" 담당자 - 예전엔 자유 입력이라 직원/관리자 상관없이 아무 이름이나 칠 수 있었다.
 // 현재 등록된 직원(관리자 포함) 목록으로 드롭다운을 만들되, 이미 저장돼 있던 값이 지금 직원
 // 목록에 없는 경우(퇴사자, 오타 등)는 선택지에서 조용히 사라지면 저장할 때 그 값이 날아가버리므로
@@ -733,6 +843,7 @@ function fillInfoForm(c) {
   document.getElementById('f-case-type').value = c.case_type || '';
   document.getElementById('f-consult-date').value = c.consult_date || '';
   document.getElementById('f-intake-date').value = c.intake_date || '';
+  document.getElementById('f-birth-date').value = c.birth_date || '';
   document.getElementById('f-assignee').value = c.assignee_name || '';
   document.getElementById('f-lawyer').value = c.assigned_lawyer || '';
   document.getElementById('f-court').value = c.court || '';
@@ -875,12 +986,16 @@ document.getElementById('info-form').addEventListener('submit', async (e) => {
   errorEl.textContent = '';
   successEl.classList.add('hidden');
 
+  const birthDate = document.getElementById('f-birth-date').value;
+  if (birthDate && !isValidDateStr(birthDate)) { errorEl.textContent = '생년월일은 yyyy-mm-dd 형식으로 입력해주세요.'; return; }
+
   const payload = {
     client_name: document.getElementById('f-client').value.trim(),
     phone: document.getElementById('f-phone').value.trim(),
     case_type: document.getElementById('f-case-type').value.trim(),
     consult_date: document.getElementById('f-consult-date').value,
     intake_date: document.getElementById('f-intake-date').value,
+    birth_date: birthDate,
     assignee_name: document.getElementById('f-assignee').value.trim(),
     assigned_lawyer: document.getElementById('f-lawyer').value.trim(),
     court: document.getElementById('f-court').value.trim(),
@@ -894,6 +1009,7 @@ document.getElementById('info-form').addEventListener('submit', async (e) => {
     fillInfoForm(currentCase);
     successEl.classList.remove('hidden');
     await renderRecentSubmit();
+    await renderStageEvents(); // 사건유형이 방금 바뀌었을 수도 있으므로 카드 표시 여부/단계 목록을 다시 맞춘다
   } catch (err) {
     errorEl.textContent = err.message;
   }
@@ -1360,7 +1476,7 @@ async function init() {
   fillInfoForm(currentCase);
   resetTaskForm();
 
-  const tasks = [renderTaskTable(), renderFiles(), renderNotes()];
+  const tasks = [renderTaskTable(), renderFiles(), renderNotes(), renderStageEvents()];
   if (hasTab(currentUser, 'fee')) {
     document.getElementById('fee-card').style.display = '';
     resetFeeForm();

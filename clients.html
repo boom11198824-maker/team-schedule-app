@@ -53,6 +53,7 @@ body {
 .topbar-left { display: flex; align-items: center; gap: 12px; }
 .topbar-left h1 { font-size: 18px; margin: 0; color: var(--brand-navy); }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
+.nav-toggle { display: none; }
 .user-name { font-size: 14px; color: var(--text-secondary); font-weight: 600; }
 
 button.btn-secondary, a.btn-secondary {
@@ -153,10 +154,13 @@ table.client-table td.muted { color: var(--text-muted); }
 .status-pill.완료 { background: var(--status-good-bg); color: var(--status-good); }
 
 @media (max-width: 640px) {
-  .topbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .topbar { padding: 10px 14px; gap: 8px; position: relative; }
   .topbar-left h1 { font-size: 16px; }
-  .topbar-right { gap: 6px; }
+  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid #e2e6ed; border-radius: 8px; background: #fff; font-size: 18px; line-height: 1; cursor: pointer; color: #14213d; }
+  .topbar-right { display: none; flex-direction: column; align-items: stretch; gap: 6px; position: absolute; top: 100%; left: 0; right: 0; background: #fff; padding: 10px 14px 14px; border-top: 1px solid #e2e6ed; box-shadow: 0 10px 18px rgba(20,33,61,0.14); z-index: 40; }
+  .topbar-right.open { display: flex; }
   .topbar-right .user-name { display: none; }
+  .topbar-right a, .topbar-right button { width: 100%; text-align: center; }
   button.btn-secondary, a.btn-secondary { padding: 7px 10px; font-size: 12px; }
   main { padding: 12px; }
   .modal { padding: 20px; width: 100%; border-radius: 14px 14px 0 0; }
@@ -171,6 +175,7 @@ table.client-table td.muted { color: var(--text-muted); }
     <div class="topbar-left">
       <h1>📋 의뢰인 목록</h1>
     </div>
+    <button type="button" id="nav-toggle" class="nav-toggle" aria-label="메뉴 열기" aria-expanded="false">☰</button>
     <div class="topbar-right">
       <a href="/app.html" class="btn-secondary">📅 팀 스케줄</a>
       <a href="/cases.html" id="nav-cases" class="btn-secondary">⚖️ 사건관리</a>
@@ -182,6 +187,32 @@ table.client-table td.muted { color: var(--text-muted); }
       <button id="btn-logout" class="btn-secondary">로그아웃</button>
     </div>
   </header>
+<script>
+(function(){
+  var toggle = document.getElementById('nav-toggle');
+  var menu = document.querySelector('.topbar-right');
+  if (!toggle || !menu) return;
+  toggle.addEventListener('click', function(e){
+    e.stopPropagation();
+    var isOpen = menu.classList.toggle('open');
+    toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  });
+  menu.addEventListener('click', function(e){
+    var t = e.target;
+    if (t.tagName === 'A' || t.tagName === 'BUTTON') {
+      menu.classList.remove('open');
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+  });
+  document.addEventListener('click', function(e){
+    if (!menu.classList.contains('open')) return;
+    if (menu.contains(e.target) || toggle.contains(e.target)) return;
+    menu.classList.remove('open');
+    toggle.setAttribute('aria-expanded', 'false');
+  });
+})();
+</script>
+
 
   <main>
     <div id="list-area" class="hidden">
